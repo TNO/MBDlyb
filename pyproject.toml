@@ -1,0 +1,53 @@
+# Copyright (c) 2023 - 2025 TNO-ESI
+# All rights reserved.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "MBDlyb"
+dynamic = ["version"]
+description = "Model-based Diagnostics library for high-tech systems."
+readme = "README.md"
+license = "EPL-2.0"
+requires-python = ">=3.11"
+authors = [
+    { name = "TNO-ESI", email = "esi-office@tno.nl" },
+]
+dependencies = [
+    "capellambse>=0.6.10",
+    "neomodel>=5.4.1",
+    "networkx>=3.4.2",
+    "nicegui>=2.8.1",
+    "numpy==2.1",
+    "pandas[excel]>=2.2.3",
+    "plotly>=5.24.1",
+    "pyAgrum>=1.17.2",
+    "pydot>=3.0.3",
+    "pyyed>=1.5.0",
+    "quimb>=1.9.0",
+    "scipy>=1.14.1",
+    "optuna>=4.2",
+    "more_itertools>=10.5.0"
+]
+
+[project.urls]
+Homepage = "https://esi.nl/research/themes/diagnostics"
+
+[tool.hatch.version]
+path = "mbdlyb/__init__.py"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/mbdlyb",
+]
+
+[tool.hatch.envs.hatch-test]
+default-args = ["tests"]
+parallel = true
+
+[tool.licensecheck]
+using = "requirements:requirements.txt"
+format = "html"
+file = 'licensecheck.html'

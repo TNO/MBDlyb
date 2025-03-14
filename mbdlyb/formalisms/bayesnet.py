@@ -194,19 +194,26 @@ visual V1 {{
 	def _layout_bn(bn: gum.BayesNet) -> tuple[dict[str, tuple[int, int]], int, int]:
 		# auto-layout nodes in BN using dot
 		import pydot
+		_id_fqn: dict[int, str] = dict()
+		for node_id in bn.nodes():
+			fqn = bn.variable(node_id).name()
+			bn.variable(node_id).setName(f'N_{node_id}')
+			_id_fqn[node_id] = fqn
 		graphs = pydot.graph_from_dot_data(bn.toDot())
 		dot_bytes = graphs[0].create_dot()  # render dot-diagram to compute node-positions
 		graphs = pydot.graph_from_dot_data(str(dot_bytes, encoding='utf-8'))
 		node_coords = {}
 		for n in bn.nodes():
-			nodes = graphs[0].get_node(f'"{bn.variable(n).name()}"')
+			nodes = graphs[0].get_node(f'N_{n}')
 			xx, yy = nodes[0].get_pos().strip('"').split(',')
-			node_coords[bn.variable(n).name()] = (float(xx), float(yy))
+			node_coords[_id_fqn[n]] = (float(xx), float(yy))
 		max_x = max(x for x, _ in node_coords.values())
 		max_y = max(y for _, y in node_coords.values())
 		scale_x = 2. if max_x <= 8191 else 16383. / max_x
 		scale_y = 2. if max_y <= 8191 else 16383. / max_y
 		node_coords = {fqn: (int(x * scale_x), int(y * scale_y)) for fqn, (x, y) in node_coords.items()}
+		for node_id in bn.nodes():
+			bn.variable(node_id).setName(_id_fqn[node_id])
 		return node_coords, max_x * scale_x, max_y * scale_y
 
 	@staticmethod

@@ -7,7 +7,7 @@ import json
 import warnings
 import re
 from pathlib import Path
-from typing import Optional, Type
+from typing import Optional, Type, Union
 
 import pandas as pd
 from neomodel import (FloatProperty, ArrayProperty, StringProperty, ZeroOrOne, RelationshipTo, RelationshipFrom,
@@ -28,10 +28,35 @@ LBL_INDICATED_BY = 'INDICATED_BY'
 LBL_RESULTS_IN = 'RESULTS_IN'
 
 
+class Error:
+	message: str
+	_relation: 'FunctionalRelation'
+	_fix_url: str
+	_fix_label: str
+
+	def __init__(self, message: str, relation: 'FunctionalRelation' = None, fix_url: str = None, fix_label: str = None):
+		self.message = message
+		self._relation = relation
+		self._fix_url = fix_url
+		self._fix_label = fix_label
+
+	@property
+	def has_fix_url(self) -> bool:
+		return bool(self._fix_url) or self._relation is not None
+
+	@property
+	def fix_url(self) -> Optional[str]:
+		return self._fix_url or ((self._relation.get_url() + 'repair/') if self._relation is not None else None)
+
+	@property
+	def fix_label(self) -> Optional[str]:
+		return self._fix_label or (str(self._relation) if self._relation is not None else None)
+
+
 class FunctionalRelation(MBDRelation):
 	weight = FloatProperty(default=1.)
 
-	def check_errors(self) -> list[tuple['FunctionalRelation', str]]:
+	def check_errors(self) -> list[Error]:
 		raise NotImplementedError(
 			f'Method \'check_errors\' has not been implemented for \'{self.__class__.__name__}\'.')
 
@@ -40,16 +65,16 @@ class FunctionalRelation(MBDRelation):
 
 
 class RealizesRelation(FunctionalRelation):
-	def check_errors(self) -> list[tuple[FunctionalRelation, str]]:
+	def check_errors(self) -> list[Error]:
 		errors = []
 		start_node = self.start_node()
 		end_node = self.end_node()
 		if not isinstance(start_node, Hardware):
-			errors.append((self, 'Start node must be Hardware.'))
+			errors.append(Error('Start node must be Hardware.', self))
 		if not isinstance(end_node, Function):
-			errors.append((self, 'End node must be Function.'))
+			errors.append(Error('End node must be Function.', self))
 		if start_node.get_net() != end_node.get_net():
-			errors.append((self, 'Start and end nodes must be in the same cluster.'))
+			errors.append(Error('Start and end nodes must be in the same cluster.', self))
 		return errors
 
 	def get_url(self) -> str:
@@ -59,35 +84,35 @@ class RealizesRelation(FunctionalRelation):
 class RequiredForRelation(FunctionalRelation):
 	operating_modes = ArrayProperty(base_property=StringProperty(), default=[])
 
-	def check_errors(self) -> list[tuple[FunctionalRelation, str]]:
+	def check_errors(self) -> list[Error]:
 		errors = []
 		start_node = self.start_node()
 		end_node = self.end_node()
 		if not isinstance(start_node, Function):
-			errors.append((self, 'Start node must be Function.'))
+			errors.append(Error('Start node must be Function.', self))
 		if not isinstance(end_node, Function):
-			errors.append((self, 'End node must be Function.'))
+			errors.append(Error('End node must be Function.', self))
 		if start_node.has_subfunctions:
-			errors.append((self, 'Start node may not have subfunctions.'))
+			errors.append(Error('Start node may not have subfunctions.', self))
 		if end_node.has_subfunctions:
-			errors.append((self, 'End node may not have subfunctions.'))
+			errors.append(Error('End node may not have subfunctions.', self))
 		return errors
 
-	def get_url(self) -> str:
-		return f'/function/{self.start_node().uid}/requiredfor/{self.end_node().uid}/'
+	def get_url(self, start_uid: str = None, end_uid: str = None) -> str:
+		return f'/function/{start_uid or self.start_node().uid}/requiredfor/{end_uid or self.end_node().uid}/'
 
 
 class AffectsRelation(FunctionalRelation):
-	def check_errors(self) -> list[tuple[FunctionalRelation, str]]:
+	def check_errors(self) -> list[Error]:
 		errors = []
 		start_node = self.start_node()
 		end_node = self.end_node()
 		if not isinstance(start_node, Hardware):
-			errors.append((self, 'Start node must be Hardware.'))
+			errors.append(Error('Start node must be Hardware.', self))
 		if not isinstance(end_node, Function):
-			errors.append((self, 'End node must be Function.'))
+			errors.append(Error('End node must be Function.', self))
 		if start_node.get_net() == end_node.get_net():
-			errors.append((self, 'Start and end node must be in different clusters.'))
+			errors.append(Error('Start and end node must be in different clusters.', self))
 		return errors
 
 	def get_url(self) -> str:
@@ -95,16 +120,14 @@ class AffectsRelation(FunctionalRelation):
 
 
 class SubfunctionOfRelation(FunctionalRelation):
-	def check_errors(self) -> list[tuple[FunctionalRelation, str]]:
+	def check_errors(self) -> list[Error]:
 		errors = []
 		start_node = self.start_node()
 		end_node = self.end_node()
 		if not isinstance(start_node, Function):
-			errors.append((self, 'Start node must be Function.'))
+			errors.append(Error('Start node must be Function.', self))
 		if not isinstance(end_node, Function):
-			errors.append((self, 'End node must be Function.'))
-		if start_node.get_net().get_net() != end_node.get_net():
-			errors.append((self, 'Invalid functional breakdown through different layers.'))
+			errors.append(Error('End node must be Function.', self))
 		return errors
 
 	def get_url(self) -> str:
@@ -129,8 +152,8 @@ class FunctionalNode(MBDNode):
 
 	net = RelationshipTo('mbdlyb.functional.gdb.Cluster', LBL_PARTOF, model=PartOfRelation, cardinality=ZeroOrOne)
 
-	def check_errors(self) -> list[tuple[FunctionalRelation, str]]:
-		errors: list[tuple[FunctionalRelation, str]] = []
+	def check_errors(self) -> list[Error]:
+		errors: list[Error] = []
 		for r in self._managed_relations:
 			for related_object in self.__getattribute__(r).all():
 				errors += self.__getattribute__(r).relationship(related_object).check_errors()
@@ -317,8 +340,21 @@ class Cluster(MBDNet):
 		return all(not n.has_subfunctions for n in self.get_functions()) and all(
 			n.is_abstract for n in self.get_subnets())
 
-	def check_errors(self) -> list[tuple[FunctionalRelation, str]]:
-		errors: list[tuple[FunctionalRelation, str]] = []
+	def check_errors(self) -> list[Error]:
+		errors: list[Error] = []
+		if self.at_root:
+			cyclic_relations_qr = db.cypher_query(f'''MATCH (f:Function)-[:PART_OF*]->(c:Cluster {{uid: "{self.uid}"}})
+	WITH collect(f) as fns
+	CALL apoc.nodes.cycles(fns, {{relTypes: ["REQUIRED_FOR"]}}) YIELD path
+	UNWIND relationships(path) AS cycle
+	WITH DISTINCT cycle AS crs
+	UNWIND crs AS cr
+	MATCH (f:Function)-[cr]->(g:Function)
+	RETURN f, cr, g''', resolve_objects=True)[0]
+			for rel in cyclic_relations_qr:
+				source, relation, target = tuple(rel)
+				errors.append(Error('Relation is part of a cyclic dependency.', relation,
+									relation.get_url(source.uid, target.uid) + 'update/'))
 		for r in self._managed_relations:
 			for related_object in self.__getattribute__(r).all():
 				errors += related_object.check_errors()

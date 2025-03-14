@@ -18,6 +18,7 @@ from .operating_modes import router as opm_router
 from .diagnostic_test_results import router as diagnostic_test_result_router
 from .diagnoser import router as diagnoser_router
 from .design_for_diagnostics import router as design_for_diagnostics_router
+from .validator import router as validator_router
 
 
 def run():
@@ -53,6 +54,7 @@ def run():
 	app.include_router(diagnostic_test_result_router)
 	app.include_router(diagnoser_router)
 	app.include_router(design_for_diagnostics_router)
+	app.include_router(validator_router)
 
 	ui.run(title='Model Editor', show=False, reload=False)
 

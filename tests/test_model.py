@@ -123,7 +123,9 @@ if __name__ == '__main__':
 	system.to_yed().write_graph('testmodel.graphml')
 	system.save_bn('testmodel', overwrite=True)
 
-	from mbdlyb import BayesNetReasoner, TensorNetReasoner, MarkovNetReasoner
+	from mbdlyb.formalisms.bayesnet import BayesNetReasoner
+	from mbdlyb.formalisms.tensor_network import TensorNetReasoner
+	from mbdlyb.formalisms.markovnet import MarkovNetReasoner
 
 	opmodes = system.get_all_opm_nodes()
 	d1 = Diagnoser(system, BayesNetReasoner)

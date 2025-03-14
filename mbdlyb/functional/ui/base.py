@@ -67,8 +67,7 @@ def header(text: str, url: str = '/'):
 def footer():
 	with ui.footer(elevated=False):
 		ui.label(
-			'This prototype tool has been developed as part of the SD2Act project, which is a collaboration between TNO-ESI and ASML.').classes(
-			'fit text-right')
+			'This prototype tool has been developed by TNO-ESI. All rights reserved.').classes('fit text-right')
 
 
 def page(title: str = None, cluster: Cluster = None, buttons=None):
@@ -145,23 +144,6 @@ def build_table(title: str, headers: list[tuple], rows: Iterable, detail_url: Op
 						tooltip_text = f'Delete {tooltip_title} "{name}"'
 						ui.icon('delete', color='negative').on('click', lambda x=o: delete_fn(x)).classes(
 							'cursor-pointer').tooltip(tooltip_text)
-
-
-@ui.refreshable
-def show_errors(functional_element: FunctionalNode | Cluster = None):
-	if functional_element is None:
-		return
-	errors = functional_element.check_errors()
-	if errors:
-		ui.label(
-			f'The {functional_element.__class__.__name__} {functional_element.name} contains {len(errors)} error{"s" if len(errors) > 1 else ""}:').classes(
-			'text-negative')
-		with ui.grid(columns=2):
-			for relation, msg in errors:
-				ui.link(str(relation), relation.get_url() + 'repair/').classes('text-negative')
-				ui.label(msg).classes('text-negative')
-	else:
-		ui.label('No issues were found.').classes('text-positive')
 
 
 # GENERIC DIALOGS

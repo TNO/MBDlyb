@@ -17,7 +17,7 @@ from mbdlyb.functional.gdb import (Cluster, Function, DirectObservable, Diagnost
 								   update_fqn, update_name)
 from mbdlyb.ui.helpers import goto, get_object_or_404
 
-from .base import Button, page, build_table, confirm, confirm_delete, show_errors
+from .base import Button, page, build_table, confirm, confirm_delete
 from .helpers import save_object, save_new_object, RequiredForRelation
 from .validation import base_name_validation
 
@@ -351,10 +351,6 @@ def cluster_update(cluster_id: str):
 
 @router.page('/{cluster_id}/')
 def cluster_details(cluster_id: str):
-	async def _check_cluster(cluster: Cluster):
-		ui.notify(f'Checking cluster {cluster.fqn}, please wait. This could take a long time, depending on the size of the cluster.')
-		await run.io_bound(show_errors.refresh, cluster)
-
 	cluster: Cluster = get_object_or_404(Cluster, uid=cluster_id)
 	if cluster is None:
 		return
@@ -364,7 +360,7 @@ def cluster_details(cluster_id: str):
 	else:
 		buttons = []
 	buttons.extend([
-		Button(None, 'checklist', 'secondary', lambda: _check_cluster(cluster), 'Check model'), [
+			Button(None, 'checklist', 'secondary', lambda: goto(f'/cluster/{cluster.uid}/validator/'), 'Check model'), [
 			Button(None, 'account_tree', 'secondary', lambda: download_graph(cluster), 'Download graph'),
 			Button(None, 'developer_board', 'secondary', lambda: download_bayesnet(cluster), 'Download Bayesnet')
 		],
@@ -377,7 +373,6 @@ def cluster_details(cluster_id: str):
 	buttons.append(Button(None, 'delete', 'negative',
 			   lambda: confirm_delete(cluster, '/' if cluster.at_root else f'/cluster/{cluster.get_net().uid}/'), 'Delete cluster'))
 	page(f'Cluster {cluster.name}', cluster, buttons)
-	show_errors()
 	with ui.column().classes('w-full'):
 		with ui.card().classes('w-full') as card:
 			card.bind_visibility_from(app.storage.general, 'show_diagrams')

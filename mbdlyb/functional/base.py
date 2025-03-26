@@ -6,8 +6,9 @@
 from typing import Union, Optional
 
 import numpy as np
+import networkx as nx
 
-from mbdlyb import MBDNode, MBDNet, MBDRelation, MBDNetReasonerView, MBDElement
+from mbdlyb import MBDNode, MBDNet, MBDRelation, MBDNetReasonerView, MBDElement, longest_common_fqn
 from mbdlyb.operating_mode import OpmLogic, OpmLogicAnd, OpmLogicOr, OpmSet
 from mbdlyb.formalisms.bayesnet import BayesNode, BayesAutoSplitNode, BayesNet, BNRelation
 from mbdlyb.formalisms.tensor_network import TensorNode, TensorAutoSplitNode, TensorNet, TNRelation
@@ -525,16 +526,79 @@ class SelectOperatingModeRelation(BNRelation, TNRelation, MNRelation, Functional
 	target: Function
 
 
-# TODO: Reconsider whether we need this class or not.
 class ClusterReasonerView(MBDNetReasonerView):
 	net: Cluster = None
 
+	_cycles: list[list[Function]] = None
+	_cycle_functions: list[Optional[Function]] = None
+	_cycle_relations: list[Optional[RequiredForRelation]] = None
+
 	def __init__(self, net: Cluster):
 		self.net = net
-		self.net.propagate_operating_modes()
+
+	def _detect_and_cut_cycles(self):
+		graph = self.net.to_nx(Function)
+		self._cycles = [[self.net.get_node(fqn) for fqn in cycle] for cycle in nx.simple_cycles(graph)]
+		self._cycle_functions = []
+		self._cycle_relations = []
+		for idx, cycle in enumerate(self._cycles):
+			if len(cycle) > 1:
+				self._cut_cycle(idx, cycle)
+			else:
+				print(f'Cannot cut self-dependency of {", ".join(n.fqn for n in cycle)}, results may be inaccurate!')
+
+	def _cut_cycle(self, idx: int, cycle: list[Function]):
+		cluster: Cluster = self.net.get_node(longest_common_fqn(*cycle))
+		cycle_relations: list[RequiredForRelation] = []
+		for _idx, fn in enumerate(cycle):
+			cycle_predecessors = [_r for _r in fn.parent_relations if isinstance(_r, RequiredForRelation) and _r.source == cycle[_idx - 1]]
+			if len(cycle_predecessors) == 1:
+				cycle_relations.append(cycle_predecessors[0])
+			else:
+				self._cycle_functions.append(None)
+				self._cycle_relations.append(None)
+				return
+		hardware_relations, function_relations = self._collect_dependencies(cycle)
+		cycle_fn = Function(f'Cycle_{idx}', cluster)
+		self._cycle_functions.append(cycle_fn)
+		for _idx, r in enumerate(cycle_relations):
+			_r = RequiredForRelation(cycle_fn, r.target, r.operating_modes, r.weight, cluster)
+			if _idx == 0:
+				self._cycle_relations.append(_r)
+				r.remove()
+		for hw, rs in hardware_relations.items():
+			RealizesRelation(hw, cycle_fn, sum(r.weight for r in rs) / len(rs), cluster)
+		for fn, rs in function_relations.items():
+			RequiredForRelation(fn, cycle_fn, weight=sum(r.weight for r in rs) / len(rs), net=cluster)
+
+	def _collect_dependencies(self, cycle: list[Function]) -> tuple[dict[Hardware, list[RealizesRelation]], dict[Function, list[RequiredForRelation]]]:
+		dependent_hardware_relations: dict[Hardware, list[RealizesRelation]] = dict()
+		dependent_functions_relations: dict[Function, list[RequiredForRelation]] = dict()
+		for fn in cycle:
+			for r in fn.parent_relations:
+				if isinstance(r, RealizesRelation):
+					if r.source not in dependent_hardware_relations:
+						dependent_hardware_relations[r.source] = [r]
+					else:
+						dependent_hardware_relations[r.source].append(r)
+				elif isinstance(r, RequiredForRelation) and r.source not in cycle and not r.source not in self._cycle_functions:
+					if r.source not in dependent_functions_relations:
+						dependent_functions_relations[r.source] = [r]
+					else:
+						dependent_functions_relations[r.source].append(r)
+		return dependent_hardware_relations, dependent_functions_relations
+
+	def _restore_cycles(self):
+		for idx, cycle_fn in enumerate(self._cycle_functions):
+			if cycle_fn is None:
+				continue
+			cycle_rel = self._cycle_relations[idx]
+			RequiredForRelation(self._cycles[idx][-1], cycle_rel.target, cycle_rel.operating_modes, cycle_rel.weight)
+			cycle_fn.remove()
 
 	def __enter__(self):
-		pass
+		self._detect_and_cut_cycles()
+		self.net.propagate_operating_modes()
 
 	def __exit__(self, exc_type, exc_value, exc_tb):
-		pass
+		self._restore_cycles()

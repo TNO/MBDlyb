@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="ASCII"?>
+<!--
+  Copyright (c) 2023 - 2025 TNO-ESI
+  All rights reserved.
+-->
+<vpd:VpdRoot xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:vpd="http://www.thalesgroup.com/vpd" id="_YxfdsOSAEe-NSc5BWRWm_g" name="MBDlyb" version="1.0.0">
+  <groups id="_4FZsEOI8Ee-yY5CBQmOf1Q" name="Inspections">
+    <scope>
+      <rules xsi:type="vpd:EClassRule">
+        <classifier href="http://www.polarsys.org/capella/core/cs/7.0.0#//Component"/>
+      </rules>
+      <architectures>PHYSICAL</architectures>
+      <architectures>LOGICAL</architectures>
+    </scope>
+    <properties xsi:type="vpd:BooleanProperty" id="_-uya4OI8Ee-yY5CBQmOf1Q" name="Inspectable" description="Whether this component can be inspected by a service engineer in the field."/>
+    <properties xsi:type="vpd:FloatProperty" id="_wAoTIOOWEe-cw4WH3FTXig" name="Cost" defaultValue="2.0"/>
+  </groups>
+  <groups id="_EC1HYOI9Ee-yY5CBQmOf1Q" name="Diagnostic test">
+    <scope>
+      <rules xsi:type="vpd:EClassRule">
+        <classifier href="http://www.polarsys.org/capella/core/la/7.0.0#//LogicalFunction"/>
+      </rules>
+      <rules xsi:type="vpd:EClassRule">
+        <classifier href="http://www.polarsys.org/capella/core/pa/7.0.0#//PhysicalFunction"/>
+      </rules>
+      <architectures>LOGICAL</architectures>
+      <architectures>PHYSICAL</architectures>
+    </scope>
+    <properties xsi:type="vpd:BooleanProperty" id="_HoFW0OI9Ee-yY5CBQmOf1Q" name="Diagnostic test" description="Whether this function represents a diagnostic test that can be executed by the service engineer. Functions broken down from this function will be tested by it."/>
+    <properties xsi:type="vpd:FloatProperty" id="_ynNT0OOWEe-cw4WH3FTXig" name="Cost" defaultValue="1.0"/>
+  </groups>
+  <groups id="_YYWIgOO9Ee-cw4WH3FTXig" name="Direct observables">
+    <scope>
+      <rules xsi:type="vpd:EClassRule">
+        <classifier href="http://www.polarsys.org/capella/core/fa/7.0.0#//FunctionOutputPort"/>
+      </rules>
+      <architectures>LOGICAL</architectures>
+      <architectures>PHYSICAL</architectures>
+    </scope>
+    <properties xsi:type="vpd:BooleanProperty" id="_eygvkOO9Ee-cw4WH3FTXig" name="Observable" description="Whether the function output is directly observable by the service engineer, i.e., without performing extra tests."/>
+  </groups>
+  <groups id="_W2PysP6PEe-0f-rTrG8erA" name="Required functional exchange">
+    <scope>
+      <rules xsi:type="vpd:EClassRule">
+        <classifier href="http://www.polarsys.org/capella/core/fa/7.0.0#//FunctionalExchange"/>
+      </rules>
+      <architectures>LOGICAL</architectures>
+      <architectures>PHYSICAL</architectures>
+    </scope>
+    <properties xsi:type="vpd:BooleanProperty" id="_p1dOsP6PEe-0f-rTrG8erA" name="Required" description="Whether the source function is required to work correctly for the target function to work correctly. If false, the functional exchange only means that the output of the source function can influence the way the target function works, but the target function can work correctly even if the source function is not functioning. When importing the Capella model into MDBlyb, the value false means that no required_for relation will be created between the functions." defaultValue="true"/>
+  </groups>
+</vpd:VpdRoot>

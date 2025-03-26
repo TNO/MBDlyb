@@ -4,15 +4,15 @@
 	All rights reserved.
 """
 import re
-from typing import Union
+from typing import Union, Optional
 
 from capellambse import MelodyModel
 from capellambse.metamodel import cs, fa
 
-from mbdlyb import longest_common_fqn
+from neomodel import db
+
 from mbdlyb.functional.gdb import (Cluster, DiagnosticTest, DiagnosticTestResult, Function, Hardware, OperatingMode,
 								   RequiredForRelation, DirectObservable, update_fqn)
-from mbdlyb.ui.helpers import get_object_or_404, get_relation_or_404
 
 
 class CapellaToCluster:
@@ -22,8 +22,8 @@ class CapellaToCluster:
 
 	_aird: str = None
 	_model: MelodyModel = None
-	_archictecture = None
-	_archictecture_root = None
+	_architecture = None
+	_architecture_root = None
 	_arch_dict: dict = None
 	_cluster: Cluster = None
 	_elements: dict = None
@@ -36,14 +36,14 @@ class CapellaToCluster:
 	_import_opms: bool = False
 
 	_diagnostic_test_mapping: dict[DiagnosticTestResult, list[str]]
-	_functions_to_position: list[Function]
+	_function_positions: dict[str, tuple[Cluster, Hardware]]
 
 	def __init__(self, aird: str) -> None:
 		self._aird = aird
 		self._model = self._load_model()
 		self._arch_dict = {"logical": self._model.la, "physical": self._model.pa}
 		self._diagnostic_test_mapping = dict()
-		self._functions_to_position = []
+		self._function_positions = dict()
 
 	def transform(
 			self,
@@ -62,25 +62,13 @@ class CapellaToCluster:
 		self._default_ll_hw_tests = default_ll_hw_tests
 		self._import_opms = import_opms
 
-		# format names of Capella objects
-		capella_objects = [
-			*self._archictecture.all_components,
-			*self._archictecture.all_functions,
-		]
-		for obj in capella_objects:
-			obj.name = self._format(obj.name)
-
-		# add Cluster, Function, and Hardware nodes to Cluster
-		self.cluster = self._build_net(self._archictecture_root, True)
-		update_fqn(self.cluster)
-
-		# add Function-Function and Hardware-Function relations
-		for fn in self._archictecture.all_functions:
-			self._add_subfunction_of_relations(fn)
-		self._position_remaining_functions()
-		update_fqn(self.cluster)
+		self._cluster = self._build_component_tree(self._architecture.root_component)
+		self._build_functional_tree(self._architecture.root_function)
 
 		self._connect_test_results()
+		self._position_remaining_nodes()
+		update_fqn(self._cluster)
+
 		self._add_required_for_relations()
 
 		if self._import_opms:
@@ -105,7 +93,78 @@ class CapellaToCluster:
 
 		# ensure unique FQNs
 		self._format_fqns()
-		return self.cluster
+		return self._cluster
+
+	def _build_component_tree(self, capella_comp: cs.Component) -> Optional[Cluster]:
+		if not capella_comp.components and not capella_comp.allocated_functions:
+			return None
+		c = Cluster(name=self._format(capella_comp.name)).save()
+		self._add_node(capella_comp, c)
+		if capella_comp.allocated_functions:
+			hw = self._add_hardware(capella_comp, c)
+			for capella_fn in capella_comp.allocated_functions:
+				self._function_positions[capella_fn.uuid] = (c, hw)
+		children = [self._build_component_tree(child_comp) for child_comp in capella_comp.components]
+		for subcluster in children:
+			if subcluster is not None:
+				subcluster.set_net(c)
+		return c
+
+	def _build_functional_tree(self, capella_fn: fa.Function) -> Optional[Function]:
+		if self._fn_root_of_diagnostic_tree(capella_fn):
+			if self._fn_is_diagnostic_test(capella_fn):
+				cost = capella_fn.property_value_groups['MBDlyb.Diagnostic test']['Cost']
+				_, dtr = self._add_specified_diagnostic_test(self._format(capella_fn.name), cost)
+				self._diagnostic_test_mapping[dtr] = [f.uuid for f in capella_fn.functions]
+			for child in capella_fn.functions:
+				self._build_functional_tree(child)
+		else:
+			fn = self._add_function(capella_fn)
+			children = [self._build_functional_tree(child_fn) for child_fn in capella_fn.functions]
+			for subfunction in children:
+				if subfunction is not None:
+					subfunction.subfunction_of.connect(fn)
+			self._add_direct_observables_to_fn(capella_fn, fn)
+			return fn
+		return None
+
+	def _add_hardware(self, capella_hw: cs.Component, cluster: Cluster) -> Hardware:
+		hw = Hardware(name=self._format(capella_hw.name)).save()
+		hw.set_net(cluster)
+		self._add_node(capella_hw, hw)
+		if self._hw_is_inspectable(capella_hw):
+			cost = capella_hw.property_value_groups['MBDlyb.Inspections']['Cost']
+			_, dtr = self._add_specified_diagnostic_test(f'Inspect_{self._format(capella_hw.name)}', cost, cluster)
+			dtr.indicated_hardware.connect(hw)
+		return hw
+
+	def _add_function(self, capella_fn: fa.Function) -> Function:
+		fn = Function(name=self._format(capella_fn.name)).save()
+		self._add_node(capella_fn, fn)
+		if capella_fn.uuid in self._function_positions:
+			c, hw = self._function_positions[capella_fn.uuid]
+			fn.set_net(c)
+			fn.realized_by.connect(hw)
+		return fn
+
+	def _add_specified_diagnostic_test(self, name: str, cost: float, cluster: Cluster = None) -> tuple[
+		DiagnosticTest, DiagnosticTestResult]:
+		dt = DiagnosticTest(name=name, fixed_cost={'Time': cost}).save()
+		dtr = DiagnosticTestResult(name=name + '_Result').save()
+		dt.test_results.connect(dtr)
+		if cluster is not None:
+			dt.set_net(cluster)
+			dtr.set_net(cluster)
+		return dt, dtr
+
+	def _add_direct_observables_to_fn(self, capella_fn: fa.Function, fn: Function):
+		for uo in [o for o in capella_fn.outputs if not o.exchanges]:
+			if bool(uo.applied_property_value_groups) and uo.property_value_groups['MBDlyb.Direct observables'][
+				'Observable']:
+				do = DirectObservable(name=self._format(uo.name)).save()
+				do.observed_functions.connect(fn)
+				if capella_fn.uuid in self._function_positions:
+					do.set_net(self._function_positions[capella_fn.uuid][0])
 
 	def _load_model(self) -> MelodyModel:
 		"""Loads Capella model using capellambse library."""
@@ -124,8 +183,8 @@ class CapellaToCluster:
 		Can be 'la' (logical) or 'pa' (physical).
 		"""
 		self._reset()
-		self._archictecture = self._arch_dict.get(arch)
-		self._archictecture_root = self._set_root()
+		self._architecture = self._arch_dict.get(arch)
+		self._architecture_root = self._set_root()
 
 	@staticmethod
 	def _format(s: str) -> str:
@@ -143,6 +202,16 @@ class CapellaToCluster:
 	def _hw_is_inspectable(capella_hw: cs.Component) -> bool:
 		return bool(capella_hw.applied_property_value_groups) and \
 			capella_hw.property_value_groups['MBDlyb.Inspections']['Inspectable']
+
+	@staticmethod
+	def _exch_is_required(capella_exch: fa.FunctionalExchange) -> bool:
+		""" Check whether the function exchange is required.
+			This returns false only if the functional exchange has been explicitly labeled as not required.
+		"""
+		if not(bool(capella_exch.applied_property_value_groups)):
+			return True  # default if there is no property value present
+		else:
+			return capella_exch.property_value_groups['MBDlyb.Required functional exchange']['Required']
 
 	@staticmethod
 	def _fn_root_of_diagnostic_tree(capella_fn: fa.Function) -> bool:
@@ -171,7 +240,7 @@ class CapellaToCluster:
 		"""
 		roots = [
 			r
-			for r in self._archictecture.component_package.components
+			for r in self._architecture.component_package.components
 			if not r.is_actor
 		]
 		if len(roots) > 1:
@@ -186,7 +255,7 @@ class CapellaToCluster:
 		"""Ensures uniqueness of all FQNs in Cluster. Capella does not require
 		unique names for each object.
 		"""
-		for el in self._get_elements_cluster(self.cluster):
+		for el in self._get_elements_cluster(self._cluster):
 			net = el.get_net()
 			if net:
 				names_in_net = [n.name for n in net.elements if n.uid != el.uid]
@@ -197,7 +266,7 @@ class CapellaToCluster:
 					new_name = f"{el.name}_{count}"
 				el.name = new_name
 				el.save()
-		update_fqn(self.cluster)
+		update_fqn(self._cluster)
 
 	def _add_node(
 			self,
@@ -218,13 +287,14 @@ class CapellaToCluster:
 		in Cluster.
 		"""
 		capella_fn_exchanges = []
-		for exch in self._archictecture.all_function_exchanges:
+		for exch in self._architecture.all_function_exchanges:
 			src_uuid = exch.source.owner.uuid
 			trgt_uuid = exch.target.owner.uuid
 
 			if (
 					src_uuid in self._elements[Function]
 					and trgt_uuid in self._elements[Function]
+					and self._exch_is_required(exch)
 			):
 				# only adds each relation from source to target once
 				if (src_uuid, trgt_uuid) not in capella_fn_exchanges:
@@ -236,39 +306,76 @@ class CapellaToCluster:
 			rel = trgt_fn.requires.connect(src_fn)
 			self._elements[RequiredForRelation][exch_uuid] = rel
 
-	def _add_subfunction_of_relations(self, capella_fn: fa.Function) -> None:
-		"""Adds function breakdown in Capella as subfunction_of relations
-		in Cluster.
-		"""
-		parent = capella_fn.parent
-		if capella_fn.uuid in self._elements[Function] and isinstance(
-				parent, fa.Function
-		) and not self._fn_root_of_diagnostic_tree(parent):
-			fn = self._elements[Function].get(capella_fn.uuid)
-
-			# if parent function not in Cluster create Function node
-			if parent.uuid not in self._elements[Function]:
-				parent_fn = Function(name=parent.name).save()
-				self._add_node(parent, parent_fn)
-				self._functions_to_position.append(parent_fn)
-
-			parent_fn = self._elements[Function].get(parent.uuid)
-
-			fn.subfunction_of.connect(parent_fn)
-
-	def _position_remaining_functions(self) -> None:
-		"""Determine the correct cluster for putting in the functions
-		not explicitly being part of one. These functions are usually
-		derived from the functional breakdown."""
-		for ftr in self._functions_to_position:
-			if len(ftr.subfunctions) == 1:  # With only one subfunction, put at higher level
-				cluster = ftr.subfunctions.single().get_net()
-				if not cluster.at_root:
-					cluster = cluster.get_net()
-			else:  # With more subfunctions, determine the common level
-				lfqn = longest_common_fqn(*[sf.fqn for sf in ftr.subfunctions])
-				cluster = self.cluster.get_node(lfqn)
-			ftr.set_net(cluster)
+	def _position_remaining_nodes(self) -> None:
+		# Position unpositioned functions
+		db.cypher_query('''CALL () {
+    MATCH (root:Cluster)
+    WHERE NOT (root)-[:PART_OF]->(:Cluster)
+    MATCH (f:Function)
+    WHERE NOT (f)-[:PART_OF]->(:Cluster)
+    RETURN root, collect(f) AS dislocated_functions
+}
+WITH *
+UNWIND dislocated_functions AS f
+CALL (f, root) {
+    MATCH (sf:Function)-[:SUBFUNCTION_OF]->(f)
+    WITH collect(sf) AS sfs
+    MATCH (c:Cluster)
+    WHERE ALL (sf IN sfs WHERE (sf)-[:PART_OF*]->(c))
+    MATCH p = (c)-[:PART_OF*]->(root)
+    RETURN c, p, length(p) AS length
+    ORDER BY length(p) DESC
+    LIMIT 1
+}
+CREATE (f)-[:PART_OF]->(c)''')
+		# Position unpositioned direct observables and test results
+		db.cypher_query('''CALL () {
+    MATCH (root:Cluster)
+    WHERE NOT (root)-[:PART_OF]->(:Cluster)
+    MATCH (n:DiagnosticTestResult|DirectObservable)
+    WHERE NOT (n)-[:PART_OF]->(:Cluster)
+    RETURN root, collect(n) AS dislocated_nodes
+}
+WITH *
+UNWIND dislocated_nodes AS n
+CALL (n, root) {
+    MATCH (f:Function|Hardware)-[:INDICATED_BY|OBSERVED_BY*]->(n)
+    WITH collect(f) AS fs
+    MATCH (c:Cluster)
+    WHERE ALL (f IN fs WHERE (f)-[:PART_OF*]->(c))
+    MATCH p = (c)-[:PART_OF*]->(root)
+    RETURN c, p, length(p) AS length
+    ORDER BY length(p) DESC
+    LIMIT 1
+}
+CREATE (n)-[:PART_OF]->(c)''')
+		# Position unpositioned diagnostic tests
+		db.cypher_query('''CALL () {
+    MATCH (root:Cluster)
+    WHERE NOT (root)-[:PART_OF]->(:Cluster)
+    MATCH (t:DiagnosticTest)
+    WHERE NOT (t)-[:PART_OF]->(:Cluster)
+    RETURN root, collect(t) AS dislocated_tests
+}
+WITH *
+UNWIND dislocated_tests AS t
+CALL (t, root) {
+    MATCH (r:DiagnosticTestResult)<-[:RESULTS_IN*]-(t)
+    WITH collect(r) AS rs
+    MATCH (c:Cluster)
+    WHERE ALL (r IN rs WHERE (r)-[:PART_OF*]->(c))
+    MATCH p = (c)-[:PART_OF*]->(root)
+    RETURN c, p, length(p) AS length
+    ORDER BY length(p) DESC
+    LIMIT 1
+}
+CREATE (t)-[:PART_OF]->(c)''')
+		# Position all remaining non-root-cluster nodes in root.
+		db.cypher_query('''MATCH (root:Cluster)
+WHERE NOT (root)-[:PART_OF]->(:Cluster)
+MATCH (n)
+WHERE NOT (n)-[:PART_OF]->(:Cluster) AND n <> root
+CREATE (n)-[:PART_OF]->(root)''')
 
 	def _connect_test_results(self) -> None:
 		"""Connects the test results that have yet to be connected to the intended
@@ -300,7 +407,7 @@ class CapellaToCluster:
 
 	def _add_operating_modes(self) -> None:
 		"""Transforms functional chains in Capella to operating modes."""
-		func_chains = self._archictecture.all_functional_chains
+		func_chains = self._architecture.all_functional_chains
 		uuid_chains = {chain.uuid: chain for chain in func_chains}
 
 		# map 'required for' relations to associated functional chains
@@ -321,13 +428,13 @@ class CapellaToCluster:
 			])
 			name = 'Select_' + '_'.join(opm_names)
 			opm = OperatingMode(name=name, operating_modes=opm_names).save()
-			end_node = get_object_or_404(Function, uid=end_uid)
+			end_node = Function.nodes.get(uid=end_uid)
 			opm.set_net(end_node.get_net())
 
 			# add operating mode to required for relations
 			for (start_uid, start_chains) in start_nodes:
-				start_node = get_object_or_404(Function, uid=start_uid)
-				rel = get_relation_or_404(start_node, end_node, "required_for")
+				start_node = Function.nodes.get(uid=start_uid)
+				rel = start_node.required_for.relationship(end_node)
 				rel.operating_modes.extend([
 					self._format(uuid_chains[start_chain].name)
 					for start_chain in start_chains
@@ -350,58 +457,3 @@ class CapellaToCluster:
 							  fixed_cost={'Time': 1.}).save()
 		test.set_net(mbd_el.get_net())
 		result.results_from.connect(test)
-
-	def _add_specified_diagnostic_test(self, cluster: Cluster, name: str, cost: float) -> tuple[
-		DiagnosticTest, DiagnosticTestResult]:
-		dt = DiagnosticTest(name=name, fixed_cost={'Time': cost}).save()
-		dt.set_net(cluster)
-		dtr = DiagnosticTestResult(name=name + '_Result').save()
-		dtr.set_net(cluster)
-		dt.test_results.connect(dtr)
-		return dt, dtr
-
-	def _build_net(self, root: cs.Component, is_sys_root: bool = False) -> Cluster:
-		"""Builds Cluster from Capella architecture."""
-		cluster = Cluster(name=root.name).save()
-		self._add_node(root, cluster)
-		update_fqn(cluster)
-
-		functions: list[Function] = []
-
-		for capella_fn in root.allocated_functions:
-			if self._fn_is_diagnostic_test(capella_fn):
-				cost = capella_fn.property_value_groups['MBDlyb.Diagnostic test']['Cost']
-				_, dtr = self._add_specified_diagnostic_test(
-					cluster, capella_fn.name, cost)
-				self._diagnostic_test_mapping[dtr] = [f.uuid for f in capella_fn.functions]
-				continue
-
-			fn = Function(name=capella_fn.name).save()
-			fn.set_net(cluster)
-			self._add_node(capella_fn, fn)
-			functions.append(fn)
-
-			for uo in [o for o in capella_fn.outputs if not o.exchanges]:
-				if bool(uo.applied_property_value_groups) and uo.property_value_groups['MBDlyb.Direct observables']['Observable']:
-					do = DirectObservable(name=self._format(uo.name)).save()
-					do.set_net(cluster)
-					do.observed_functions.connect(fn)
-
-		if not is_sys_root and functions:
-			hw = Hardware(name=root.name).save()
-			hw.set_net(cluster)
-			self._add_node(root, hw)
-			for fn in functions:
-				hw.realizes.connect(fn)
-
-			if self._hw_is_inspectable(root):
-				cost = root.property_value_groups['MBDlyb.Inspections']['Cost']
-				_, dtr = self._add_specified_diagnostic_test(
-					cluster, f'Inspect_{root.name}', cost)
-				dtr.indicated_hardware.connect(hw)
-
-		for capella_comp in root.components:
-			if capella_comp.uuid not in self._elements[Cluster]:
-				subcluster = self._build_net(capella_comp)
-				subcluster.set_net(cluster)
-		return cluster

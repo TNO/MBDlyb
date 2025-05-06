@@ -11,7 +11,7 @@ from typing import Callable, Type
 from math import ceil
 import pandas as pd
 
-import pyAgrum as gum
+import pyagrum as gum
 import numpy as np
 
 from mbdlyb import MBDElement, MBDNode, MBDNet, MBDRelation, MBDReasoner

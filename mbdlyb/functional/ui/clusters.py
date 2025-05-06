@@ -397,7 +397,7 @@ def cluster_details(cluster_id: str):
 			with ui.card().classes('w-full'):
 				build_table('Hardware', [
 					('Name', 'name'),
-					('Faults', ('fault_rates', lambda x: ' | '.join(x.keys()))),
+					('Faults', ('fault_rates', lambda x: ' | '.join([f'{key}: {value}' for key, value in x.items()]))),
 					('Realizes', ('realizes', lambda x: ' | '.join(map(lambda y: y.name, x.all())))),
 					('Observed by', ('observed_by', lambda x: ' | '.join(map(lambda y: y.fqn, x.all())))),
 					('Indicated by', ('indicated_by', lambda x: ' | '.join(map(lambda y: y.fqn, x.order_by('fqn')))))

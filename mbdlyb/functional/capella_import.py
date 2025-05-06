@@ -129,7 +129,11 @@ class CapellaToCluster:
 		return None
 
 	def _add_hardware(self, capella_hw: cs.Component, cluster: Cluster) -> Hardware:
-		hw = Hardware(name=self._format(capella_hw.name)).save()
+		fault_rate = 0.01  # default
+		if capella_hw.property_value_groups.get('MBDlyb.Hardware priors'):
+			fault_rate = capella_hw.property_value_groups['MBDlyb.Hardware priors']['Fault rate']
+
+		hw = Hardware(name=self._format(capella_hw.name), fault_rates={'Broken': fault_rate}).save()
 		hw.set_net(cluster)
 		self._add_node(capella_hw, hw)
 		if self._hw_is_inspectable(capella_hw):
@@ -200,7 +204,7 @@ class CapellaToCluster:
 
 	@staticmethod
 	def _hw_is_inspectable(capella_hw: cs.Component) -> bool:
-		return bool(capella_hw.applied_property_value_groups) and \
+		return bool(capella_hw.property_value_groups.get('MBDlyb.Inspections')) and \
 			capella_hw.property_value_groups['MBDlyb.Inspections']['Inspectable']
 
 	@staticmethod

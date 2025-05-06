@@ -49,4 +49,14 @@
     </scope>
     <properties xsi:type="vpd:BooleanProperty" id="_p1dOsP6PEe-0f-rTrG8erA" name="Required" description="Whether the source function is required to work correctly for the target function to work correctly. If false, the functional exchange only means that the output of the source function can influence the way the target function works, but the target function can work correctly even if the source function is not functioning. When importing the Capella model into MDBlyb, the value false means that no required_for relation will be created between the functions." defaultValue="true"/>
   </groups>
+  <groups id="_9srKcA7aEfCWuZVqI8Q_SA" name="Hardware priors">
+    <scope>
+      <rules xsi:type="vpd:EClassRule">
+        <classifier href="http://www.polarsys.org/capella/core/cs/7.0.0#//Component"/>
+      </rules>
+      <architectures>LOGICAL</architectures>
+      <architectures>PHYSICAL</architectures>
+    </scope>
+    <properties xsi:type="vpd:FloatProperty" id="_CWdZAA7bEfCWuZVqI8Q_SA" name="Fault rate" description="The probability that this particular component is faulty (if there is no additional diagnostic information available)" defaultValue="0.01"/>
+  </groups>
 </vpd:VpdRoot>

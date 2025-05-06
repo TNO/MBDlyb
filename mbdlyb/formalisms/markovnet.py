@@ -8,7 +8,7 @@ from itertools import product
 from more_itertools import divide
 from math import ceil
 from typing import Callable, Type
-import pyAgrum as gum
+import pyagrum as gum
 import numpy as np
 import pandas as pd
 

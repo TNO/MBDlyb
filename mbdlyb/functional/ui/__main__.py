@@ -56,7 +56,7 @@ def run():
 	app.include_router(design_for_diagnostics_router)
 	app.include_router(validator_router)
 
-	ui.run(title='Model Editor', show=False, reload=False)
+	ui.run(title='Model Editor', show=False, reload=False, reconnect_timeout=600)
 
 
 if __name__ in {"__main__", "__mp_main__"}:

@@ -12,6 +12,7 @@ For more information and some high-level documentation, please visit [our websit
 # Installation & usage
 This section briefly describes how to install MBDlyb, how to set up the database ([Neo4j](https://neo4j.com/)) which is used to store the models, and how to start MBDlyb.
 More documentation is available [here](https://mbdlyb.esi.nl/userguide/).
+Pre-packaged _wheel_ files can be found on the [Releases page](https://github.com/TNO/MBDlyb/releases) on Github.
 
 ## Installation
 MBDlyb is developed in Python and distributed as a Python wheel package. It is advised to install MBDlyb in a Python virtual environment, e.g., using `venv` or `conda`. How to create a virtual environment using `venv` is described below.
@@ -38,7 +39,7 @@ cd C:\MBDlyb\
 .\mbdlyb_env\Scripts\Activate.ps1
 ```
 
-The MBDlyb wheel package can be installed using the following command:
+The MBDlyb [wheel package](https://github.com/TNO/MBDlyb/releases) can be installed using the following command:
 
 ```bash
 pip install <path_to_whl>

@@ -1,6 +1,6 @@
 numpy==2.1
 pandas[excel]>=2.2.3
-pyAgrum>=1.17.2
+pyAgrum>=2.0.0
 quimb>=1.9.0
 networkx>=3.4.2
 pydot>=3.0.3

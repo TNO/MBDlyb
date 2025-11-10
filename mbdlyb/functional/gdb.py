@@ -6,8 +6,10 @@
 import json
 import warnings
 import re
+from math import prod
+from multiprocessing import Queue
 from pathlib import Path
-from typing import Optional, Type, Union
+from typing import Optional, Type
 
 import pandas as pd
 from neomodel import (FloatProperty, ArrayProperty, StringProperty, ZeroOrOne, RelationshipTo, RelationshipFrom,
@@ -17,7 +19,7 @@ import mbdlyb.functional as fn
 from mbdlyb import longest_common_fqn
 from mbdlyb.operating_mode import OpmLogic, OpmSet, OpmVariable
 from mbdlyb.gdb import MBDRelation, MBDNode, LBL_PARTOF, PartOfRelation, MBDNet, MBDElement
-
+from mbdlyb.functional.ui.messages import Error, Warning, ValidationMessage
 
 LBL_SUBFUNCTION = 'SUBFUNCTION_OF'
 LBL_REQUIRED = 'REQUIRED_FOR'
@@ -26,56 +28,34 @@ LBL_AFFECTS = 'AFFECTS'
 LBL_OBSERVED = 'OBSERVED_BY'
 LBL_INDICATED_BY = 'INDICATED_BY'
 LBL_RESULTS_IN = 'RESULTS_IN'
-
-
-class Error:
-	message: str
-	_relation: 'FunctionalRelation'
-	_fix_url: str
-	_fix_label: str
-
-	def __init__(self, message: str, relation: 'FunctionalRelation' = None, fix_url: str = None, fix_label: str = None):
-		self.message = message
-		self._relation = relation
-		self._fix_url = fix_url
-		self._fix_label = fix_label
-
-	@property
-	def has_fix_url(self) -> bool:
-		return bool(self._fix_url) or self._relation is not None
-
-	@property
-	def fix_url(self) -> Optional[str]:
-		return self._fix_url or ((self._relation.get_url() + 'repair/') if self._relation is not None else None)
-
-	@property
-	def fix_label(self) -> Optional[str]:
-		return self._fix_label or (str(self._relation) if self._relation is not None else None)
+LBL_COMMUNICATES_THROUGH = 'COMMUNICATES_THROUGH'
+LBL_YIELDS_ERROR = 'YIELDS_ERROR'
+LBL_REPORTS_ERROR = 'REPORTS_ERROR'
 
 
 class FunctionalRelation(MBDRelation):
 	weight = FloatProperty(default=1.)
 
-	def check_errors(self) -> list[Error]:
+	def validate(self) -> list[Error]:
 		raise NotImplementedError(
-			f'Method \'check_errors\' has not been implemented for \'{self.__class__.__name__}\'.')
+			f'Method \'validate\' has not been implemented for \'{self.__class__.__name__}\'.')
 
 	def get_url(self) -> str:
 		raise NotImplementedError(f'Method \'get_url\' has not been implemented for \'{self.__class__.__name__}\'.')
 
 
 class RealizesRelation(FunctionalRelation):
-	def check_errors(self) -> list[Error]:
-		errors = []
+	def validate(self) -> list[ValidationMessage]:
+		messages = []
 		start_node = self.start_node()
 		end_node = self.end_node()
 		if not isinstance(start_node, Hardware):
-			errors.append(Error('Start node must be Hardware.', self))
+			messages.append(Error('Start node must be Hardware.', str(self), self.get_url()))
 		if not isinstance(end_node, Function):
-			errors.append(Error('End node must be Function.', self))
+			messages.append(Error('End node must be Function.', str(self), self.get_url()))
 		if start_node.get_net() != end_node.get_net():
-			errors.append(Error('Start and end nodes must be in the same cluster.', self))
-		return errors
+			messages.append(Warning('Start and end nodes must be in the same cluster.', str(self), self.get_url()))
+		return messages
 
 	def get_url(self) -> str:
 		return f'/hardware/{self.start_node().uid}/realizes/{self.end_node().uid}/'
@@ -83,52 +63,53 @@ class RealizesRelation(FunctionalRelation):
 
 class RequiredForRelation(FunctionalRelation):
 	operating_modes = ArrayProperty(base_property=StringProperty(), default=[])
+	error_codes = ArrayProperty(base_property=StringProperty(), default=[])
 
-	def check_errors(self) -> list[Error]:
-		errors = []
+	def validate(self) -> list[ValidationMessage]:
+		messages = []
 		start_node = self.start_node()
 		end_node = self.end_node()
 		if not isinstance(start_node, Function):
-			errors.append(Error('Start node must be Function.', self))
+			messages.append(Error('Start node must be Function.', str(self), self.get_url()))
 		if not isinstance(end_node, Function):
-			errors.append(Error('End node must be Function.', self))
+			messages.append(Error('End node must be Function.', str(self), self.get_url()))
 		if start_node.has_subfunctions:
-			errors.append(Error('Start node may not have subfunctions.', self))
+			messages.append(Warning('Start node may not have subfunctions.', str(self), self.get_url()))
 		if end_node.has_subfunctions:
-			errors.append(Error('End node may not have subfunctions.', self))
-		return errors
+			messages.append(Warning('End node may not have subfunctions.', str(self), self.get_url()))
+		return messages
 
 	def get_url(self, start_uid: str = None, end_uid: str = None) -> str:
 		return f'/function/{start_uid or self.start_node().uid}/requiredfor/{end_uid or self.end_node().uid}/'
 
 
 class AffectsRelation(FunctionalRelation):
-	def check_errors(self) -> list[Error]:
-		errors = []
+	def validate(self) -> list[ValidationMessage]:
+		messages = []
 		start_node = self.start_node()
 		end_node = self.end_node()
 		if not isinstance(start_node, Hardware):
-			errors.append(Error('Start node must be Hardware.', self))
+			messages.append(Error('Start node must be Hardware.', str(self), self.get_url()))
 		if not isinstance(end_node, Function):
-			errors.append(Error('End node must be Function.', self))
+			messages.append(Error('End node must be Function.', str(self), self.get_url()))
 		if start_node.get_net() == end_node.get_net():
-			errors.append(Error('Start and end node must be in different clusters.', self))
-		return errors
+			messages.append(Warning('Start and end node must be in different clusters.', str(self), self.get_url()))
+		return messages
 
 	def get_url(self) -> str:
 		return f'/hardware/{self.start_node().uid}/affects/{self.end_node().uid}/'
 
 
 class SubfunctionOfRelation(FunctionalRelation):
-	def check_errors(self) -> list[Error]:
-		errors = []
+	def validate(self) -> list[ValidationMessage]:
+		messages = []
 		start_node = self.start_node()
 		end_node = self.end_node()
 		if not isinstance(start_node, Function):
-			errors.append(Error('Start node must be Function.', self))
+			messages.append(Error('Start node must be Function.', str(self), self.get_url()))
 		if not isinstance(end_node, Function):
-			errors.append(Error('End node must be Function.', self))
-		return errors
+			messages.append(Error('End node must be Function.', str(self), self.get_url()))
+		return messages
 
 	def get_url(self) -> str:
 		return f'/function/{self.end_node().uid}/subfunction/{self.start_node().uid}/'
@@ -146,18 +127,63 @@ class ResultsInRelation(FunctionalRelation):
 	pass
 
 
+class CommunicatesThroughRelation(FunctionalRelation):
+	error_codes = ArrayProperty(base_property=StringProperty(), default=[])
+
+
+class YieldsErrorRelation(FunctionalRelation):
+	error_code = StringProperty(required=True)
+
+
+class ReportsErrorRelation(FunctionalRelation):
+	error_code = StringProperty(required=True)
+
+
 class FunctionalNode(MBDNode):
+	_DEFAULT_STATES = []
 	_managed_relations: tuple[str] = ()
 	RELATION_ATTRIBUTES: list[tuple[str]] = []
 
 	net = RelationshipTo('mbdlyb.functional.gdb.Cluster', LBL_PARTOF, model=PartOfRelation, cardinality=ZeroOrOne)
 
-	def check_errors(self) -> list[Error]:
-		errors: list[Error] = []
+	@property
+	def has_cpt(self) -> bool:
+		return False
+
+	@property
+	def requires_cpt(self) -> bool:
+		return False
+
+	def validate(self) -> list[ValidationMessage]:
+		messages: list[ValidationMessage] = []
 		for r in self._managed_relations:
 			for related_object in self.__getattribute__(r).all():
-				errors += self.__getattribute__(r).relationship(related_object).check_errors()
-		return errors
+				messages += self.__getattribute__(r).relationship(related_object).validate()
+		return messages
+
+
+class CPTEnabledNode(FunctionalNode):
+	cpt = JSONProperty(default=dict())
+
+	@property
+	def has_cpt(self):
+		return bool(self.cpt)
+
+	@property
+	def cpt_url(self) -> str:
+		raise NotImplementedError
+
+	def validate(self) -> list[ValidationMessage]:
+		messages = super().validate()
+		if self.requires_cpt or self.cpt:
+			expected_cpt_lines = prod(len(p.states) for p in self.parents())
+			expected_cpt_line_length = len(self.states)
+			if not self.cpt:
+				messages.append(Error(f'No CPT provided for {self}.', 'Specify CPT', self.cpt_url))
+			elif len(self.cpt['lines']) != expected_cpt_lines or any(
+					len(l) != expected_cpt_line_length for l in self.cpt['lines']):
+				messages.append(Error(f'No valid CPT found for {self}.', 'Specify CPT', self.cpt_url))
+		return messages
 
 
 class OperatingMode(FunctionalNode):
@@ -186,7 +212,8 @@ class Observed(FunctionalNode):
 	indicated_by = RelationshipTo('mbdlyb.functional.gdb.DiagnosticTestResult', LBL_INDICATED_BY, model=IndicatedByRelation)
 
 
-class Function(Observed):
+class Function(CPTEnabledNode, Observed):
+	_DEFAULT_STATES = fn.Function.DEFAULT_STATES
 	_managed_relations = ('subfunctions', 'required_for')
 	RELATION_ATTRIBUTES = Observed.RELATION_ATTRIBUTES + [
 		('subfunction_of', 'subfunctions'), ('subfunctions', 'subfunction_of'), ('realized_by', 'realizes'),
@@ -199,13 +226,30 @@ class Function(Observed):
 	subfunctions = RelationshipFrom('mbdlyb.functional.gdb.Function', LBL_SUBFUNCTION, model=SubfunctionOfRelation)
 	required_for = RelationshipTo('mbdlyb.functional.gdb.Function', LBL_REQUIRED, model=RequiredForRelation)
 	requires = RelationshipFrom('mbdlyb.functional.gdb.Function', LBL_REQUIRED, model=RequiredForRelation)
+	communicates_through = RelationshipTo('mbdlyb.functional.gdb.Function', LBL_COMMUNICATES_THROUGH, model=CommunicatesThroughRelation)
+	communicates_from = RelationshipFrom('mbdlyb.functional.gdb.Function', LBL_COMMUNICATES_THROUGH, model=CommunicatesThroughRelation)
+	yields_error = RelationshipTo('mbdlyb.functional.gdb.ObservedError', LBL_YIELDS_ERROR, model=YieldsErrorRelation)
+	reports_error = RelationshipTo('mbdlyb.functional.gdb.ObservedError', LBL_REPORTS_ERROR, model=ReportsErrorRelation)
 
 	@property
 	def has_subfunctions(self) -> bool:
 		return len(self.subfunctions) > 0
 
+	@property
+	def requires_cpt(self) -> bool:
+		return self.has_custom_states or any(p.has_custom_states for p in self.requires) or any(
+			p.has_custom_states for p in self.affected_by) or any(p.has_custom_states for p in self.subfunctions)
+
+	def parents(self) -> list['MBDNode']:
+		return list(self.subfunctions) + list(self.realized_by) + list(self.requires) + list(self.affected_by)
+
+	@property
+	def cpt_url(self) -> str:
+		return f'/function/{self.uid}/cpt/'
+
 
 class Hardware(Observed):
+	_DEFAULT_STATES = fn.Hardware.DEFAULT_STATES
 	_managed_relations = ('realizes', 'affects')
 	BASE_PRIOR = {'Broken': 0.01}
 	RELATION_ATTRIBUTES = Observed.RELATION_ATTRIBUTES + [('realizes', 'realized_by'), ('affects', 'affected_by'),
@@ -216,11 +260,18 @@ class Hardware(Observed):
 	realizes = RelationshipTo(Function, LBL_REALIZES, model=RealizesRelation)
 	affects = RelationshipTo(Function, LBL_AFFECTS, model=AffectsRelation)
 
+	@property
+	def states(self) -> list[str]:
+		return self._DEFAULT_STATES + list(self.fault_rates.keys())
 
-class ObservableNode(FunctionalNode):
+
+class ObservableNode(CPTEnabledNode):
 	def get_observed_nodes(self) -> list[FunctionalNode]:
 		raise NotImplementedError(
 			f'Method \'get_observed_nodes\' is not implemented for \'{self.__class__.__name__}\'.')
+
+	def parents(self) -> list['MBDNode']:
+		return self.get_observed_nodes()
 
 	def reposition(self) -> Optional[tuple[str, str, str]]:
 		obs_nodes = self.get_observed_nodes()
@@ -234,8 +285,13 @@ class ObservableNode(FunctionalNode):
 		self.set_net(n_lfqn)
 		return repositioning
 
+	@property
+	def requires_cpt(self) -> bool:
+		return self.has_custom_states or any(p.has_custom_states for p in self.get_observed_nodes())
+
 
 class DirectObservable(ObservableNode):
+	_DEFAULT_STATES = fn.DirectObservable.DEFAULT_STATES
 	RELATION_ATTRIBUTES = ObservableNode.RELATION_ATTRIBUTES + [('observed_functions', 'observed_by'),
 																('observed_hardware', 'observed_by')]
 
@@ -246,16 +302,41 @@ class DirectObservable(ObservableNode):
 	fn_rate = FloatProperty(default=.01)
 
 	def get_observed_nodes(self) -> list[FunctionalNode]:
-		return self.observed_functions.all() + self.observed_hardware.all()
+		return self.observed_hardware.all() + self.observed_functions.all()
+
+	@property
+	def cpt_url(self) -> str:
+		return f'/observable/{self.uid}/cpt/'
 
 
-class DiagnosticTest(ObservableNode):
+class ObservedError(ObservableNode):
+	_DEFAULT_STATES = fn.ObservedError.DEFAULT_STATES
+	RELATION_ATTRIBUTES = ObservableNode.RELATION_ATTRIBUTES + [('observed_function', 'reporting_function')]
+
+	reporting_function = RelationshipFrom('mbdlyb.functional.gdb.Function', LBL_REPORTS_ERROR, model=ReportsErrorRelation)
+	observed_function = RelationshipFrom('mbdlyb.functional.gdb.Function', LBL_YIELDS_ERROR, model=YieldsErrorRelation)
+
+	fp_rate = FloatProperty(default=.001)
+	fn_rate = FloatProperty(default=.01)
+	error_code = StringProperty(required=True)
+
+	def get_observed_nodes(self) -> list[FunctionalNode]:
+		return self.observed_function.all()
+
+
+class DiagnosticTest(FunctionalNode):
 	RELATION_ATTRIBUTES = ObservableNode.RELATION_ATTRIBUTES + [('test_results', 'results_from')]
 
 	test_results = RelationshipTo('mbdlyb.functional.gdb.DiagnosticTestResult', LBL_RESULTS_IN, model=ResultsInRelation)
 
 	fixed_cost = JSONProperty(default=dict())
 	preconditions = JSONProperty(default=dict())
+
+	def validate(self) -> list[ValidationMessage]:
+		messages = super().validate()
+		for test_result in self.test_results:
+			messages += test_result.validate()
+		return messages
 
 	def delete(self):
 		for r in self.test_results:
@@ -264,6 +345,7 @@ class DiagnosticTest(ObservableNode):
 
 
 class DiagnosticTestResult(ObservableNode):
+	_DEFAULT_STATES = fn.DiagnosticTestResult.DEFAULT_STATES
 	RELATION_ATTRIBUTES = ObservableNode.RELATION_ATTRIBUTES + [('results_from', 'results_from'),
 																('indicated_functions', 'indicated_by'),
 																('indicated_hardware', 'indicated_by')]
@@ -275,11 +357,19 @@ class DiagnosticTestResult(ObservableNode):
 	fn_rate = FloatProperty(default=.001)
 
 	def get_observed_nodes(self) -> list[FunctionalNode]:
-		return self.indicated_functions.all() + self.indicated_hardware.all()
+		return self.indicated_hardware.all() + self.indicated_functions.all()
+
+	@property
+	def cpt_url(self) -> str:
+		return f'/test_result/{self.uid}/cpt/'
+
+	@property
+	def test(self) -> DiagnosticTest:
+		return self.results_from.single()
 
 
 class Cluster(MBDNet):
-	_managed_relations: tuple[str] = ('subnets', 'functions', 'hardware')
+	_managed_relations: tuple[str] = ('subnets', 'functions', 'hardware', 'observables', 'tests')
 	_RELATION_ATTRS: dict[Type[MBDNode], dict[Type[MBDNode], str]] = {
 		Hardware: {
 			Function: 'realizes',
@@ -297,21 +387,25 @@ class Cluster(MBDNet):
 		'DiagnosticTest': (DiagnosticTest, {'fp_rate': .0001, 'fn_rate': .001})
 	}
 	GDB_NODE_TRANSFORM_CLASSES: dict[Type[FunctionalNode], tuple[Type[fn.FunctionalNode], list[str]]] = {
-		Function: (fn.Function, []),
+		Function: (fn.Function, ['states']),
 		Hardware: (fn.Hardware, ['fault_rates']),
-		DirectObservable: (fn.DirectObservable, ['fp_rate', 'fn_rate']),
+		DirectObservable: (fn.DirectObservable, ['states', 'fp_rate', 'fn_rate']),
+		ObservedError: (fn.ObservedError, ['states', 'fp_rate', 'fn_rate', 'error_code']),
 		DiagnosticTest: (fn.DiagnosticTest, ['fixed_cost', 'preconditions']),
-		DiagnosticTestResult: (fn.DiagnosticTestResult, ['fp_rate', 'fn_rate']),
+		DiagnosticTestResult: (fn.DiagnosticTestResult, ['states', 'fp_rate', 'fn_rate']),
 		OperatingMode: (fn.OperatingMode, ['operating_modes'])
 	}
 	GDB_RELATION_TRANSFORM_CLASSES: dict[Type[FunctionalRelation], tuple[Type[fn.FunctionalRelation], list[str]]] = {
 		SubfunctionOfRelation: (fn.SubfunctionOfRelation, []),
-		RequiredForRelation: (fn.RequiredForRelation, ['operating_modes']),
+		RequiredForRelation: (fn.RequiredForRelation, ['operating_modes', 'error_codes']),
 		RealizesRelation: (fn.RealizesRelation, []),
 		AffectsRelation: (fn.AffectsRelation, []),
 		ObservedByRelation: (fn.ObservedByRelation, []),
 		ResultsInRelation: (fn.ResultsInRelation, []),
-		IndicatedByRelation: (fn.IndicatedByRelation, [])
+		IndicatedByRelation: (fn.IndicatedByRelation, []),
+		CommunicatesThroughRelation: (fn.CommunicatesThroughRelation, ['error_codes']),
+		YieldsErrorRelation: (fn.YieldsErrorRelation, []),
+		ReportsErrorRelation: (fn.ReportsErrorRelation, [])
 	}
 
 	net = RelationshipTo('mbdlyb.functional.gdb.Cluster', LBL_PARTOF, model=PartOfRelation)
@@ -340,8 +434,8 @@ class Cluster(MBDNet):
 		return all(not n.has_subfunctions for n in self.get_functions()) and all(
 			n.is_abstract for n in self.get_subnets())
 
-	def check_errors(self) -> list[Error]:
-		errors: list[Error] = []
+	def validate(self) -> list[ValidationMessage]:
+		messages: list[ValidationMessage] = []
 		if self.at_root:
 			cyclic_relations_qr = db.cypher_query(f'''MATCH (f:Function)-[:PART_OF*]->(c:Cluster {{uid: "{self.uid}"}})
 	WITH collect(f) as fns
@@ -353,12 +447,12 @@ class Cluster(MBDNet):
 	RETURN f, cr, g''', resolve_objects=True)[0]
 			for rel in cyclic_relations_qr:
 				source, relation, target = tuple(rel)
-				errors.append(Error('Relation is part of a cyclic dependency.', relation,
-									relation.get_url(source.uid, target.uid) + 'update/'))
+				messages.append(Error('Relation is part of a cyclic dependency.', str(relation),
+									  relation.get_url(source.uid, target.uid) + 'update/'))
 		for r in self._managed_relations:
 			for related_object in self.__getattribute__(r).all():
-				errors += related_object.check_errors()
-		return errors
+				messages += related_object.validate()
+		return messages
 
 	@classmethod
 	def load(cls, uid: str) -> fn.Cluster:
@@ -399,6 +493,7 @@ class Cluster(MBDNet):
 				parent_cluster = root if depth == 1 and pc.name == root.name else root.get_node(
 					_adapt_fqn(db_root_fqn, pc.fqn))
 				fn.Cluster(c.name, parent_cluster)
+			cpt_nodes: dict[FunctionalNode, fn.FunctionalNode] = dict()
 			for cluster_fqn, nodes in node_data.items():
 				try:
 					parent_cluster_fqn = _adapt_fqn(db_root_fqn, cluster_fqn)
@@ -412,10 +507,14 @@ class Cluster(MBDNet):
 							warnings.warn(f'Class of {node.fqn} could not be determined ({type(node)}), skipping!')
 							continue
 						argvals = [node.__getattribute__(arg) for arg in args]
-						klass(node.name, *argvals, parent_cluster)
+						fn_n = klass(node.name, *argvals, parent_cluster)
+						if node.requires_cpt or node.has_cpt:
+							fn_n.cpt = node.cpt['lines']
+							cpt_nodes[node] = fn_n
 				except KeyError as e:
 					warnings.warn(f'Cluster {cluster_fqn} could not be found, skipping!')
 			operating_modes = root.get_all_opm_nodes()
+			error_nodes: dict[str, fn.ObservedError] = {n.error_code: n for n in root.get_nodes_of_type(fn.ObservedError)}
 			has_operating_modes = bool(operating_modes)
 			value_opm_map: dict[str, OpmSet] = dict()
 			for opm in operating_modes.keys():
@@ -444,9 +543,17 @@ class Cluster(MBDNet):
 								opm_value = OpmLogic()
 							argvals.remove(argvals[idx])
 							argvals.insert(idx, opm_value)
+						if 'error_codes' in args:
+							idx = args.index('error_codes')
+							err_nodes = [error_nodes[ec] for ec in argvals[idx]]
+							argvals.remove(argvals[idx])
+							argvals.insert(idx, err_nodes)
 						klass(source, target, *argvals, relation.weight)
 					except KeyError:
 						warnings.warn(f'Failed to find one or more nodes in {relation}, skipping!')
+			for db_node, fn_node in cpt_nodes.items():
+				fn_node.cpt_parents = [root.get_node(_adapt_fqn(db_root_fqn, p_fqn[0])) for p_fqn in
+									   db_node.cpt['parents']]
 			if has_operating_modes:
 				root.propagate_operating_modes()
 			return root
@@ -462,17 +569,18 @@ class Cluster(MBDNet):
 		default_hw_tests: bool,
 		default_ll_hw_tests: bool,
 		import_opms: bool,
-		*files: Path) -> 'Cluster':
+		*files: Path,
+		queue: Queue = None) -> 'Cluster':
 		from mbdlyb.functional.capella_import import CapellaToCluster  # lazy import
 		aird_file = next((f for f in files if f.suffix == ".aird"), None)
-		transformer = CapellaToCluster(aird_file)
+		transformer = CapellaToCluster(aird_file, queue)
 		cluster = transformer.transform(
 			architecture,
 			default_fn_tests=default_fn_tests,
 			default_hl_fn_tests=default_hl_fn_tests,
 			default_hw_tests=default_hw_tests,
 			default_ll_hw_tests=default_ll_hw_tests,
-			import_opms=import_opms,
+			import_opms=import_opms
 		)
 		return cluster
 

@@ -16,6 +16,7 @@ from mbdlyb.formalisms.markovnet import MarkovNode, MarkovAutoSplitNode, MarkovN
 
 
 class FunctionalNode(MBDNode):
+	DEFAULT_STATES: list[str] = []
 	_EQ_MAP = {
 		'Hardware': 'Healthy',
 		'Function': 'Ok',
@@ -55,6 +56,7 @@ class OperatingMode(BayesNode, TensorNode, MarkovNode, FunctionalNode):
 
 
 class Function(BayesAutoSplitNode, TensorAutoSplitNode, MarkovAutoSplitNode, FunctionalNode):
+	DEFAULT_STATES = ['Ok', 'NOk']
 	_TYPE_NAME = 'Function'
 	_color = '#CC99FF'
 	_false_positive_weight: float = 0.
@@ -65,8 +67,8 @@ class Function(BayesAutoSplitNode, TensorAutoSplitNode, MarkovAutoSplitNode, Fun
 		'Function': 'Ok'
 	}
 
-	def __init__(self, name: str, cluster: 'Cluster'):
-		super().__init__(name, ['Ok', 'NOk'], cluster)
+	def __init__(self, name: str, states: list[str], cluster: 'Cluster'):
+		super().__init__(name, states, cluster)
 		self._false_positive_weight = 0.
 
 	def _compute_cpt_line(self, values: dict[FunctionalNode, str]) -> list[float]:
@@ -80,6 +82,8 @@ class Function(BayesAutoSplitNode, TensorAutoSplitNode, MarkovAutoSplitNode, Fun
 			# find the relation to this parent node
 			rel = [p for p in self.parent_relations if p.source == pn][0]
 			weight = rel.weight
+			if not isinstance(weight, float):
+				print(f'Weight is {weight.__class__.__name__} for {rel}!')
 			fp = rel.source._false_positive_weight if isinstance(rel.source, Function) else 0.
 			# check if value is a pass or fail
 			value_is_ok = self._EQ_MAP.get(pn.__class__.__name__) == val
@@ -128,6 +132,7 @@ class Function(BayesAutoSplitNode, TensorAutoSplitNode, MarkovAutoSplitNode, Fun
 
 
 class Hardware(BayesNode, TensorNode, MarkovNode, FunctionalNode):
+	DEFAULT_STATES = ['Healthy']
 	_TYPE_NAME = 'Hardware'
 	_color = '#FF9900'
 
@@ -153,13 +158,14 @@ class Hardware(BayesNode, TensorNode, MarkovNode, FunctionalNode):
 
 
 class ObservableNode(BayesNode, TensorNode, MarkovNode, FunctionalNode):
+	DEFAULT_STATES = ['Ok', 'NOk']
 	_TYPE_NAME = 'Observable'
 
 	fp_rate: float = 0.
 	fn_rate: float = 0.
 
-	def __init__(self, name: str, fp_rate: float, fn_rate: float, cluster: 'Cluster'):
-		super().__init__(name, ['Ok', 'NOk'], cluster)
+	def __init__(self, name: str, states: list[str], fp_rate: float, fn_rate: float, cluster: 'Cluster'):
+		super().__init__(name, states, cluster)
 		self.fp_rate = fp_rate
 		self.fn_rate = fn_rate
 
@@ -192,8 +198,45 @@ class DirectObservable(ObservableNode):
 	_TYPE_NAME = 'DirectObservable'
 	_color = '#CCFFCC'
 
-	def __init__(self, name: str, fp_rate: float, fn_rate: float, cluster: 'Cluster'):
-		super().__init__(name, fp_rate, fn_rate, cluster)
+	def __init__(self, name: str, states: list[str], fp_rate: float, fn_rate: float, cluster: 'Cluster'):
+		super().__init__(name, states, fp_rate, fn_rate, cluster)
+
+
+class ObservedError(DirectObservable):
+	DEFAULT_STATES = ['Absent', 'Present']
+	_TYPE_NAME = 'ErrorMessage'
+	_color = '#FFFF99'
+
+	error_code: str
+	observation_path: set['RequiredForRelation']
+
+	def __init__(self, name: str, states: list[str], fp_rate: float, fn_rate: float, error_code: str,
+				 cluster: 'Cluster'):
+		super().__init__(name, states, fp_rate, fn_rate, cluster)
+		self.error_code = error_code
+		self.observation_path = set()
+
+	def _compute_cpt_line(self, values: dict[MBDNode, str]) -> list[float]:
+		if all(v == 'Ok' for p, v in values.items() if p in self.enabling_functions):
+			if values[self.observed_function] == 'NOk':
+				return [self.fp_rate, 1. - self.fp_rate]
+			else:
+				return [1. - self.fn_rate, self.fn_rate]
+		return [1., 0.]
+
+	def _compute_array_line(self, values: dict[MBDNode, str]) -> list[float]:
+		return self._compute_cpt_line(values)
+
+	def _compute_factor_line(self, values: dict[FunctionalNode, str]) -> list[float]:
+		return self._compute_cpt_line(values)
+
+	@property
+	def observed_function(self) -> Function:
+		return [pr for pr in self.parent_relations if isinstance(pr, YieldsErrorRelation)][0].source
+
+	@property
+	def enabling_functions(self) -> list[Function]:
+		return [pr.source for pr in self.parent_relations if isinstance(pr, ReportsErrorRelation)]
 
 
 class DiagnosticTest(FunctionalNode):
@@ -227,8 +270,8 @@ class DiagnosticTestResult(ObservableNode):
 	_TYPE_NAME = 'DiagnosticTestResult'
 	_color = '#339966'
 
-	def __init__(self, name: str, fp_rate: float, fn_rate: float, cluster: 'Cluster'):
-		super().__init__(name, fp_rate, fn_rate, cluster)
+	def __init__(self, name: str, states: list[str], fp_rate: float, fn_rate: float, cluster: 'Cluster'):
+		super().__init__(name, states, fp_rate, fn_rate, cluster)
 
 	@property
 	def test(self) -> DiagnosticTest:
@@ -291,14 +334,14 @@ class Cluster(BayesNet, TensorNet, MarkovNet, MBDNet):
 		while len(function_nodes) > 0:
 			# find all nodes for which the operating mode on the incoming edges can be inferred
 			nodes_to_infer = {node for node in function_nodes if
-						all([rel.inferred_operating_modes is not None for rel in node.child_relations if
-							rel.__class__ == RequiredForRelation]) and
-						all([rel.inferred_operating_modes is not None for rel in node.parent_relations if
-							rel.__class__ == SubfunctionOfRelation])}
+							  all([rel.inferred_operating_modes is not None for rel in node.child_relations if
+								   isinstance(rel, RequiredForRelation)]) and all(
+								  [rel.inferred_operating_modes is not None for rel in node.parent_relations if
+								   isinstance(rel, SubfunctionOfRelation)])}
 			# also infer operating modes if one of the child required-for relations has no operating mode
-			nodes_to_infer |=  {node for node in function_nodes if
-						any([rel.inferred_operating_modes is not None and not rel.inferred_operating_modes for rel in node.child_relations if
-							rel.__class__ == RequiredForRelation])}
+			nodes_to_infer |= {node for node in function_nodes if
+							   any([rel.inferred_operating_modes is not None and not rel.inferred_operating_modes for
+									rel in node.child_relations if isinstance(rel, RequiredForRelation)])}
 			for node in nodes_to_infer:
 				# compute the combined operating mode of all incoming required-for relations and all outgoing subfunction-of relations
 				opmode_children = OpmLogicOr()
@@ -322,9 +365,9 @@ class Cluster(BayesNet, TensorNet, MarkovNet, MBDNet):
 						opmode = OpmLogic.from_copy(opmode_children)
 					parent_rel.set_inferred_operating_modes(opmode)
 
-				# set the operating mode on all outgoing subfunction-of relations
+				# set the operating mode on all outgoing subfunction-of, yields-error and communicates-through relations
 				for child_rel in node.child_relations:
-					if not isinstance(child_rel, SubfunctionOfRelation):
+					if not isinstance(child_rel, (SubfunctionOfRelation, YieldsErrorRelation, CommunicatesThroughRelation)):
 						continue
 					opmode = OpmLogic.from_copy(opmode_children)
 					child_rel.set_inferred_operating_modes(opmode)
@@ -332,7 +375,9 @@ class Cluster(BayesNet, TensorNet, MarkovNet, MBDNet):
 
 		# Operating mode propagation - step 2
 		# propagation from function and hardware nodes to diagnostic tests and direct observables
-		for node in self.get_nodes_of_type(ObservableNode):
+		for node in self.get_nodes_of_type(DiagnosticTestResult, DirectObservable):
+			if isinstance(node, ObservedError):
+				continue
 			for parent_rel in node.parent_relations:
 				opmode = OpmLogicOr()
 				for rel in parent_rel.source.child_relations:
@@ -346,6 +391,19 @@ class Cluster(BayesNet, TensorNet, MarkovNet, MBDNet):
 				parent_rel.set_inferred_operating_modes(opmode)
 
 		# Operating mode propagation - step 3
+		# propagation from yields-error relation to reports-error relations on observed errors
+		for node in self.get_nodes_of_type(ObservedError):
+			opmode = OpmLogicOr()
+			re_relations: set[ReportsErrorRelation] = set()
+			for parent_rel in node.parent_relations:
+				if isinstance(parent_rel, YieldsErrorRelation):
+					opmode.add(parent_rel.inferred_operating_modes)
+				elif isinstance(parent_rel, ReportsErrorRelation):
+					re_relations.add(parent_rel)
+			for parent_rel in re_relations:
+				parent_rel.set_inferred_operating_modes(opmode)
+
+		# Operating mode propagation - step 4
 		# propagation from IndicatedRelation of TestResultNode to ResultsRelation of TestResultNode
 		for node in self.get_nodes_of_type(DiagnosticTestResult):
 			opmode = OpmLogicOr()
@@ -375,15 +433,17 @@ class Cluster(BayesNet, TensorNet, MarkovNet, MBDNet):
 					removed_relations.add(rel)
 					rel.remove()
 
-		# step 2: remove all test-result nodes which have a removed indicated-by relation
-		for node in [rel.target for rel in removed_relations if isinstance(rel, IndicatedByRelation)]:
+		# step 2: remove all test-result nodes which have a removed indicated-by or yields-error relation
+		for node in [rel.target for rel in removed_relations if
+					 isinstance(rel, (IndicatedByRelation, YieldsErrorRelation))]:
 			if node not in removed_nodes:
 				removed_nodes.add(node)
 				node.remove()
 
 		# step 3: remove all function nodes which have a removed sub-function relation and no remaining sub-function relations
 		for node in [rel.target for rel in removed_relations if isinstance(rel, SubfunctionOfRelation)]:
-			if node not in removed_nodes and not [rel for rel in node.parent_relations if isinstance(rel, SubfunctionOfRelation)]:
+			if node not in removed_nodes and not [rel for rel in node.parent_relations if
+												  isinstance(rel, SubfunctionOfRelation)]:
 				removed_nodes.add(node)
 				node.remove()
 
@@ -466,10 +526,27 @@ class RequiredForRelation(BNRelation, TNRelation, MNRelation, FunctionalRelation
 	source: Function
 	target: Function
 
-	def __init__(self, source: MBDNode, target: MBDNode, operating_modes: OpmLogic = OpmLogic(), weight: float = 1.,
-				 net: Cluster = None):
+	error_codes: list[ObservedError]
+
+	def __init__(self, source: MBDNode, target: MBDNode, operating_modes: OpmLogic = OpmLogic(),
+				 error_codes: list[ObservedError] = None, weight: float = 1., net: Cluster = None):
 		super().__init__(source, target, weight, net)
 		self._operating_modes = operating_modes
+		self.error_codes = error_codes or []
+		for ec in self.error_codes:
+			ec.observation_path.add(self)
+
+	@property
+	def label(self) -> str:
+		l = super().label
+		if self.error_codes:
+			l += f' ![{", ".join(n.error_code for n in self.error_codes)}]'
+		return l
+
+	def remove(self):
+		super().remove()
+		for ec in self.error_codes:
+			ec.observation_path.remove(self)
 
 
 class AffectsRelation(BNRelation, TNRelation, MNRelation, FunctionalRelation):
@@ -517,6 +594,48 @@ class ResultsInRelation(FunctionalRelation):
 	target: DiagnosticTestResult
 
 
+class CommunicatesThroughRelation(FunctionalRelation):
+	_TYPE_NAME = 'CommunicatesThroughRelation'
+	_label = 'communicates_through'
+	_color = '#FFFF99'
+
+	_error_codes: list[ObservedError]
+
+	source: Function
+	target: Function
+
+	def __init__(self, source: MBDNode, target: MBDNode, error_codes: list[ObservedError] = None, weight: float = 1.,
+				 net: 'Cluster' = None):
+		super().__init__(source, target, weight, net)
+		self._error_codes = error_codes
+
+	@property
+	def label(self) -> str:
+		return f'{super().label} [{", ".join(ec.error_code for ec in self._error_codes)}]'
+
+	@property
+	def error_codes(self) -> list[ObservedError]:
+		return self._error_codes
+
+
+class YieldsErrorRelation(BNRelation, TNRelation, MNRelation, FunctionalRelation):
+	_TYPE_NAME = 'YieldsErrorRelation'
+	_label = 'yields_errors'
+	_color = '#FFFF99'
+
+	source: Function
+	target: ObservedError
+
+
+class ReportsErrorRelation(BNRelation, TNRelation, MNRelation, FunctionalRelation):
+	_TYPE_NAME = 'Reports'
+	_label = 'reports_error'
+	_color = '#FFFF99'
+
+	source: Function
+	target: ObservedError
+
+
 class SelectOperatingModeRelation(BNRelation, TNRelation, MNRelation, FunctionalRelation):
 	_TYPE_NAME = 'SelectOperatingModeRelation'
 	_label = 'select'
@@ -533,17 +652,25 @@ class ClusterReasonerView(MBDNetReasonerView):
 	_cycle_functions: list[Optional[Function]] = None
 	_cycle_relations: list[Optional[RequiredForRelation]] = None
 
+	_duplicated_reporting_functions: dict[Function, set[Function]] = None
+	_duplicated_reporting_chains: dict[RequiredForRelation, set[RequiredForRelation]] = None
+	_duplicated_reporting_dependencies: dict[FunctionalRelation, set[FunctionalRelation]] = None
+
 	def __init__(self, net: Cluster):
 		self.net = net
 
 	def _detect_and_cut_cycles(self):
-		graph = self.net.to_nx(Function)
-		self._cycles = [[self.net.get_node(fqn) for fqn in cycle] for cycle in nx.simple_cycles(graph)]
+		graph = self.net.to_nx(Function, relation_types=[RequiredForRelation])
+		self._cycles: list[list[Function]] = [[self.net.get_node(fqn) for fqn in cycle] for cycle in
+											  nx.simple_cycles(graph)]
 		self._cycle_functions = []
 		self._cycle_relations = []
 		for idx, cycle in enumerate(self._cycles):
 			if len(cycle) > 1:
-				self._cut_cycle(idx, cycle)
+				if any(f.states != Function.DEFAULT_STATES for f in cycle):
+					print(f'Cannot cut loops with custom states: {", ".join(n.fqn for n in cycle)}.')
+				else:
+					self._cut_cycle(idx, cycle)
 			else:
 				print(f'Cannot cut self-dependency of {", ".join(n.fqn for n in cycle)}, results may be inaccurate!')
 
@@ -551,7 +678,8 @@ class ClusterReasonerView(MBDNetReasonerView):
 		cluster: Cluster = self.net.get_node(longest_common_fqn(*cycle))
 		cycle_relations: list[RequiredForRelation] = []
 		for _idx, fn in enumerate(cycle):
-			cycle_predecessors = [_r for _r in fn.parent_relations if isinstance(_r, RequiredForRelation) and _r.source == cycle[_idx - 1]]
+			cycle_predecessors = [_r for _r in fn.parent_relations if
+								  isinstance(_r, RequiredForRelation) and _r.source == cycle[_idx - 1]]
 			if len(cycle_predecessors) == 1:
 				cycle_relations.append(cycle_predecessors[0])
 			else:
@@ -559,19 +687,21 @@ class ClusterReasonerView(MBDNetReasonerView):
 				self._cycle_relations.append(None)
 				return
 		hardware_relations, function_relations = self._collect_dependencies(cycle)
-		cycle_fn = Function(f'Cycle_{idx}', cluster)
+		cycle_fn = Function(f'Cycle_{idx}', Function.DEFAULT_STATES, cluster)
 		self._cycle_functions.append(cycle_fn)
 		for _idx, r in enumerate(cycle_relations):
-			_r = RequiredForRelation(cycle_fn, r.target, r.operating_modes, r.weight, cluster)
+			_r = RequiredForRelation(cycle_fn, r.target, r.operating_modes, r.error_codes, r.weight, cluster)
 			if _idx == 0:
 				self._cycle_relations.append(_r)
 				r.remove()
 		for hw, rs in hardware_relations.items():
 			RealizesRelation(hw, cycle_fn, sum(r.weight for r in rs) / len(rs), cluster)
 		for fn, rs in function_relations.items():
-			RequiredForRelation(fn, cycle_fn, weight=sum(r.weight for r in rs) / len(rs), net=cluster)
+			RequiredForRelation(fn, cycle_fn, weight=sum(r.weight for r in rs) / len(rs),
+								error_codes=list({ec for r in rs for ec in r.error_codes}), net=cluster)
 
-	def _collect_dependencies(self, cycle: list[Function]) -> tuple[dict[Hardware, list[RealizesRelation]], dict[Function, list[RequiredForRelation]]]:
+	def _collect_dependencies(self, cycle: list[Function]) -> tuple[
+		dict[Hardware, list[RealizesRelation]], dict[Function, list[RequiredForRelation]]]:
 		dependent_hardware_relations: dict[Hardware, list[RealizesRelation]] = dict()
 		dependent_functions_relations: dict[Function, list[RequiredForRelation]] = dict()
 		for fn in cycle:
@@ -581,7 +711,8 @@ class ClusterReasonerView(MBDNetReasonerView):
 						dependent_hardware_relations[r.source] = [r]
 					else:
 						dependent_hardware_relations[r.source].append(r)
-				elif isinstance(r, RequiredForRelation) and r.source not in cycle and not r.source not in self._cycle_functions:
+				elif isinstance(r,
+								RequiredForRelation) and r.source not in cycle and not r.source not in self._cycle_functions:
 					if r.source not in dependent_functions_relations:
 						dependent_functions_relations[r.source] = [r]
 					else:
@@ -593,12 +724,91 @@ class ClusterReasonerView(MBDNetReasonerView):
 			if cycle_fn is None:
 				continue
 			cycle_rel = self._cycle_relations[idx]
-			RequiredForRelation(self._cycles[idx][-1], cycle_rel.target, cycle_rel.operating_modes, cycle_rel.weight)
+			RequiredForRelation(self._cycles[idx][-1], cycle_rel.target, cycle_rel.operating_modes,
+								cycle_rel.error_codes, cycle_rel.weight)
 			cycle_fn.remove()
+
+	def _unfold_reporting_chains(self):
+		self._duplicated_reporting_functions = dict()
+		self._duplicated_reporting_chains = dict()
+		self._duplicated_reporting_dependencies = dict()
+		unique_paths: dict[frozenset[RequiredForRelation], list[ObservedError]] = dict()
+		for rn in self.net.get_nodes_of_type(ObservedError):
+			if not rn.observation_path:
+				continue
+			fs = frozenset(rn.observation_path)
+			if fs in unique_paths:
+				unique_paths[fs].append(rn)
+			else:
+				unique_paths[fs] = [rn]
+		_idx = 0
+		for path, observed_nodes in unique_paths.items():
+			if len(observed_nodes) > 1:
+				_idx += 1
+				suffix = f'__{_idx}'
+			else:
+				suffix = f'__{observed_nodes[0].error_code}'
+			nodes_to_duplicate: set[Function] = {fn for rfr in path for fn in (rfr.source, rfr.target)}
+			replacements: dict[Function, Function] = dict()
+			for ntd in nodes_to_duplicate:
+				dn = Function(ntd.name + suffix, ntd.states, ntd.net)
+				replacements[ntd] = dn
+				if ntd in self._duplicated_reporting_functions:
+					self._duplicated_reporting_functions[ntd].add(dn)
+				else:
+					self._duplicated_reporting_functions[ntd] = {dn}
+				for pr in ntd.parent_relations:
+					if pr not in path:
+						if isinstance(pr, (RequiredForRelation, CommunicatesThroughRelation)):
+							if pr.error_codes and set(pr.error_codes) != set(observed_nodes):
+								continue
+							if isinstance(pr, RequiredForRelation):
+								dr = RequiredForRelation(pr.source, dn, pr.operating_modes, pr.error_codes, pr.weight, pr.net)
+							elif isinstance(pr, CommunicatesThroughRelation):
+								dr = CommunicatesThroughRelation(pr.source, dn, pr.error_codes, pr.weight, pr.net)
+						else:
+							dr = pr.__class__(pr.source, dn, pr.weight, pr.net)
+						if pr in self._duplicated_reporting_dependencies:
+							self._duplicated_reporting_dependencies[pr].add(dr)
+						else:
+							self._duplicated_reporting_dependencies[pr] = {dr}
+				for cr in ntd.child_relations:
+					if cr not in path:
+						if isinstance(cr, ReportsErrorRelation) and cr.target not in observed_nodes:
+							continue
+						if isinstance(cr, RequiredForRelation):
+							dr = RequiredForRelation(dn, cr.target, cr.operating_modes, cr.error_codes, cr.weight, cr.net)
+						else:
+							dr = cr.__class__(dn, cr.target, cr.weight, cr.net)
+						if cr in self._duplicated_reporting_dependencies:
+							self._duplicated_reporting_dependencies[cr].add(dr)
+						else:
+							self._duplicated_reporting_dependencies[cr] = {dr}
+			for rfr in path:
+				rrfr = RequiredForRelation(replacements[rfr.source], replacements[rfr.target], rfr.operating_modes,
+										   rfr.error_codes, rfr.weight, rfr.net)
+				if rfr in self._duplicated_reporting_chains:
+					self._duplicated_reporting_chains[rfr].add(rrfr)
+				else:
+					self._duplicated_reporting_chains[rfr] = {rrfr}
+		for ntr in self._duplicated_reporting_functions.keys():
+			ntr.remove()
+
+	def _fold_reporting_chains(self):
+		for df, rfs in self._duplicated_reporting_functions.items():
+			df.net.add_node(df)
+			for rf in rfs:
+				rf.remove()
+		for rfr in self._duplicated_reporting_chains.keys():
+			rfr.create()
+		for dr in self._duplicated_reporting_dependencies.keys():
+			dr.create()
 
 	def __enter__(self):
 		self._detect_and_cut_cycles()
+		self._unfold_reporting_chains()
 		self.net.propagate_operating_modes()
 
 	def __exit__(self, exc_type, exc_value, exc_tb):
+		self._fold_reporting_chains()
 		self._restore_cycles()

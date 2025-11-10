@@ -202,8 +202,9 @@ class MBDNet(MBDElement):
 																		   subnet.get_nodes_of_type(*klass,
 																									depth=depth - 1)]
 
-	def to_nx(self, *node_types: Type[MBDNode]) -> nx.DiGraph:
+	def to_nx(self, *node_types: Type[MBDNode], relation_types: list[Type['MBDRelation']] = None) -> nx.DiGraph:
 		node_types = tuple(node_types) or (MBDNode,)
+		relation_types = tuple(relation_types) if relation_types else (MBDRelation,)
 		nodes = [n for n in self.get_flat_nodes() if isinstance(n, node_types)]
 		graph = nx.DiGraph()
 		graph.add_nodes_from([
@@ -211,7 +212,7 @@ class MBDNet(MBDElement):
 		])
 		graph.add_edges_from(
 			[(r.source.fqn, r.target.fqn, {'label': r.label, 'color': r.get_color()}) for r in self.get_flat_relations()
-			 if r.source in nodes and r.target in nodes])
+			 if isinstance(r, relation_types) and r.source in nodes and r.target in nodes])
 		return graph
 
 	def to_yed(self, *node_types: Type[MBDNode], group: yed.Group = None,
@@ -253,6 +254,9 @@ class MBDRelation(TypedElement):
 		self.source = source
 		self.target = target
 		self.net = net or self.source.root.get_node(longest_common_fqn(source.fqn, target.fqn))
+		self.create()
+
+	def create(self):
 		self.net.relations.append(self)
 		self.source.child_relations.append(self)
 		self.target.parent_relations.append(self)
@@ -345,12 +349,15 @@ class MBDReasoner(ABC):
 	def add_evidence(self, evidence: dict[str, str | dict[str, float] | list[float]]):
 		for _n, _ev in evidence.items():
 			n, ev = self.prep_evidence(_n, _ev)
-			self._evidence[n] = ev
+			if any(ev):
+				self._evidence[n] = ev
 
 	def drop_evidence(self, *evs: Union[str, MBDNode]):
 		if len(evs) > 0:
 			for e in evs:
-				del self._evidence[e]
+				_e = e if isinstance(e, str) else e.fqn
+				if _e in self._evidence:
+					del self._evidence[_e]
 		else:
 			self._evidence = dict()
 

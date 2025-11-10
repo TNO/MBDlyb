@@ -11,25 +11,25 @@ dynamic = ["version"]
 description = "Model-based Diagnostics library for high-tech systems."
 readme = "README.md"
 license = "EPL-2.0"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 authors = [
     { name = "TNO-ESI", email = "esi-office@tno.nl" },
 ]
 dependencies = [
-    "capellambse>=0.6.10",
-    "neomodel>=5.4.1",
-    "networkx>=3.4.2",
-    "nicegui>=2.8.1",
+    "capellambse==0.6.20",
+    "neomodel>=5.5.3",
+    "networkx>=3.5",
+    "nicegui>=3.0.3",
     "numpy==2.1",
     "pandas[excel]>=2.2.3",
     "plotly>=5.24.1",
-    "pyAgrum>=2.0.0",
-    "pydot>=3.0.3",
+    "pyAgrum>=2.2.1",
+    "pydot>=4.0.1",
     "pyyed>=1.5.0",
-    "quimb>=1.9.0",
-    "scipy>=1.14.1",
-    "optuna>=4.2",
-    "more_itertools>=10.5.0"
+    "quimb>=1.11.2",
+    "scipy>=1.16.2",
+    "optuna>=4.5",
+    "more_itertools>=10.8.0"
 ]
 
 [project.urls]

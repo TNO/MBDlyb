@@ -33,9 +33,16 @@ class MNElement(MBDElement):
 class MarkovNode(MNElement, MBDNode):
 	_factor_fn: Callable[[dict['MBDNode', str]], list[float]] = None
 
+	cpt_parents: list['MarkovNode'] = None
+	cpt: list[list[float]] = None
+
+	@property
+	def has_cpt(self) -> bool:
+		return self.cpt is not None
+
 	@property
 	def parents_mn(self) -> list['MarkovNode']:
-		return [pr.source for pr in self.parent_relations if isinstance(pr, MNRelation)]
+		return self.cpt_parents or [pr.source for pr in self.parent_relations if isinstance(pr, MNRelation)]
 
 	def create_mn_node(self, mn: gum.MarkovRandomField, node_sets: dict[Type[MBDNode], list[int]]):
 		if mn is None:
@@ -49,7 +56,7 @@ class MarkovNode(MNElement, MBDNode):
 			node_sets[self.__class__] = [id]
 
 	def create_mn_connections(self, mn: gum.MarkovRandomField):
-		nodes = [self.fqn] + [p.fqn for p in self.parents_mn]
+		nodes = [self.fqn] + [p.fqn for p in (reversed(self.parents_mn) if self.has_cpt else self.parents_mn)]
 		mn.addFactor(nodes)
 		mn.factor(nodes)[:] = self._compute_factor()
 
@@ -57,9 +64,13 @@ class MarkovNode(MNElement, MBDNode):
 		self._factor_fn = factor_fn
 
 	def _compute_factor(self) -> np.ndarray:
-		shape = [len(p.states) for p in reversed(self.parents_mn)] + [len(self.states)]
-		params = list(product(*[[(p, v) for v in p.states] for p in reversed(self.parents_mn)]))
-		factor = np.array([self._compute_factor_line(dict(ps)) for ps in params]).flatten()
+		if self.has_cpt:
+			shape = [len(p.states) for p in self.parents_mn] + [len(self.states)]
+			factor = np.array(self.cpt)
+		else:
+			shape = [len(p.states) for p in reversed(self.parents_mn)] + [len(self.states)]
+			params = list(product(*[[(p, v) for v in p.states] for p in reversed(self.parents_mn)]))
+			factor = np.array([self._compute_factor_line(dict(ps)) for ps in params]).flatten()
 		return np.reshape(factor, shape)
 
 	def _compute_factor_line(self, values: dict[MBDNode, str]) -> list[float]:

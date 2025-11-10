@@ -3,6 +3,8 @@
 	Copyright (c) 2023 - 2025 TNO-ESI
 	All rights reserved.
 """
+import mbdlyb.functional as fn
+
 from nicegui import ui, APIRouter
 from neomodel import db
 
@@ -10,7 +12,7 @@ from mbdlyb.functional.gdb import Cluster, DiagnosticTest, DiagnosticTestResult,
 from mbdlyb.ui.helpers import get_object_or_404
 
 from .base import Button, page, goto
-from .helpers import save_object, save_new_object, IndicatesRelation
+from .helpers import save_object, save_new_object, IndicatesRelation, node_cpt, StateTable, state_table
 from .validation import base_name_validation
 
 router = APIRouter()
@@ -22,16 +24,18 @@ TEST_RESULT_RELATION_MAP = {
 }
 
 
-def test_result_form(test_result: DiagnosticTestResult, cluster: Cluster, update: bool = True):
+def test_result_form(test_result: DiagnosticTestResult, states: StateTable, cluster: Cluster, update: bool = True):
 	ui.input('Name', validation=base_name_validation(cluster, test_result if update else None)) \
 		.bind_value(test_result, 'name').props('hide-bottom-space')
 	ui.number('False positive rate', min=0., max=1., step=.0001).bind_value(test_result, 'fp_rate')
 	ui.number('False negative rate', min=0., max=1., step=.0001).bind_value(test_result, 'fn_rate')
+	state_table(states, fn.DiagnosticTestResult.DEFAULT_STATES)
 
 
 @router.page('/test/{test_id}/results/new/')
 def test_result_create(test_id: str):
-	def _save(test_result: DiagnosticTestResult, test: DiagnosticTest, cluster: Cluster):
+	def _save(test_result: DiagnosticTestResult, states: StateTable, test: DiagnosticTest, cluster: Cluster):
+		test_result.states = states.to_list()
 		save_new_object(test_result, cluster)
 		test_result.results_from.connect(test)
 		goto(f'/test/{test.uid}/')
@@ -41,25 +45,31 @@ def test_result_create(test_id: str):
 	if cluster is None:
 		return
 	test_result = DiagnosticTestResult(name='')
+	states = StateTable.from_list(test_result.states_)
 	page(f'New diagnostic test result in {test.name}', cluster, [
 		Button('Discard', None, 'warning', lambda: goto(f'/test/{test.uid}/')),
-		Button('Save', 'save', None, lambda: _save(test_result, test, cluster))
+		Button('Save', 'save', None, lambda: _save(test_result, states, test, cluster))
 	])
-	test_result_form(test_result, cluster, False)
+	test_result_form(test_result, states, cluster, False)
 
 
 @router.page('/test_result/{result_id}/update/')
 def test_update(result_id: str):
+	def _save(test_result: DiagnosticTestResult, states: StateTable, red_url: str):
+		test_result.states = states.to_list()
+		save_object(test_result, red_url)
+
 	test_result: DiagnosticTestResult = get_object_or_404(DiagnosticTestResult, uid=result_id)
 	if test_result is None:
 		return
 	cluster = test_result.get_net()
 	test: DiagnosticTest = test_result.results_from.single()
+	states = StateTable.from_list(test.states_)
 	page(f'Update diagnostic test result {test_result.fqn}', cluster, [
 		Button('Discard', None, 'warning', lambda: goto(f'/test/{test.uid}/')),
-		Button('Save', 'save', None, lambda: save_object(test_result, f'/test/{test.uid}/'))
+		Button('Save', 'save', None, lambda: _save(test_result, states, f'/test/{test.uid}/'))
 	])
-	test_result_form(test_result, cluster)
+	test_result_form(test_result, states, cluster)
 
 
 @router.page('/test_result/{result_id}/tests/')
@@ -112,3 +122,11 @@ ORDER BY c.fqn''', resolve_objects=True)
 					cb = ui.checkbox(n['n'].fqn).bind_value(n, 'checked').props('size=xs')
 					ui.slider(min=.0, max=1., step=.01).bind_enabled_from(cb, 'value').bind_value(n, 'weight').props(
 						'label-always').classes('p-2')
+
+
+@router.page('/test_result/{test_id}/cpt/')
+def test_cpt(test_id: str):
+	test_result = get_object_or_404(DiagnosticTestResult, uid=test_id)
+	if test_result is None:
+		return
+	node_cpt(DiagnosticTestResult, test_id, f'/test/{test_result.results_from.single().uid}/')

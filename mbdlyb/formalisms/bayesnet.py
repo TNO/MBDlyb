@@ -35,9 +35,16 @@ class BNElement(MBDElement):
 class BayesNode(BNElement, MBDNode):
 	_cpt_fn: Callable[[dict['MBDNode', str]], list[float]] = None
 
+	cpt_parents: list['BayesNode'] = None
+	cpt: list[list[float]] = None
+
+	@property
+	def has_cpt(self) -> bool:
+		return self.cpt is not None
+
 	@property
 	def parents_bn(self) -> list['BayesNode']:
-		return [pr.source for pr in self.parent_relations if isinstance(pr, BNRelation)]
+		return self.cpt_parents or [pr.source for pr in self.parent_relations if isinstance(pr, BNRelation)]
 
 	def create_bn_node(self, bn: gum.BayesNet, node_sets: dict[Type[MBDNode], list[int]]):
 		if bn is None:
@@ -51,16 +58,20 @@ class BayesNode(BNElement, MBDNode):
 			node_sets[self.__class__] = [id]
 
 	def create_bn_connections(self, bn: gum.BayesNet):
-		bn.addArcs([(p.fqn, self.fqn) for p in self.parents_bn])
+		bn.addArcs([(p.fqn, self.fqn) for p in (reversed(self.parents_bn) if self.has_cpt else self.parents_bn)])
 		bn.cpt(self.fqn)[:] = self._compute_cpt()
 
 	def set_cpt_fn(self, cpt_fn: Callable[..., list[float]] | None):
 		self._cpt_fn = cpt_fn
 
 	def _compute_cpt(self) -> np.ndarray:
-		shape = [len(p.states) for p in reversed(self.parents_bn)] + [len(self.states)]
-		params = list(product(*[[(p, v) for v in p.states] for p in reversed(self.parents_bn)]))
-		table = np.array([self._compute_cpt_line(dict(ps)) for ps in params]).flatten()
+		if self.has_cpt:
+			shape = [len(p.states) for p in self.parents_bn] + [len(self.states)]
+			table = np.array(self.cpt)
+		else:
+			shape = [len(p.states) for p in reversed(self.parents_bn)] + [len(self.states)]
+			params = list(product(*[[(p, v) for v in p.states] for p in reversed(self.parents_bn)]))
+			table = np.array([self._compute_cpt_line(dict(ps)) for ps in params]).flatten()
 		return np.reshape(table, shape)
 
 	def _compute_cpt_line(self, values: dict[MBDNode, str]) -> list[float]:

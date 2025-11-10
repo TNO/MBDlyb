@@ -8,7 +8,7 @@ from neomodel import db
 from mbdlyb.functional.gdb import Cluster, Function, Hardware, DirectObservable, DiagnosticTest
 from mbdlyb.ui.helpers import get_object_or_404, get_relation_or_404
 
-from .base import Button, page, build_table, confirm_delete, confirm_delete_relation
+from .base import Button, page, TableColumn, Table, confirm_delete, confirm_delete_relation
 from .helpers import (goto, save_object, save_new_object, RealizesRelation, AffectsRelation, ObservesRelation,
 					  TestsRelation)
 from .validation import base_name_validation
@@ -122,30 +122,46 @@ def hardware_details(hardware_id: str):
 			ui.link(test_result.name, f'/test/{test_result.results_from.single().uid}/').tooltip(test_result.fqn)
 	with ui.grid(columns='1fr 1fr').classes('w-full'):
 		with ui.card():
-			build_table('Realizes', [
-				('Name', 'name'), ('Weight', ('realized_by', lambda sf: sf.relationship(hardware).weight))
-			], hardware.realizes.order_by('fqn'),
-						create_url=f'/hardware/{hardware.uid}/realizes/new/',
-						edit_fn=lambda x: goto(f'/hardware/{hardware.uid}/realizes/{x.uid}/update/'),
-						delete_fn=lambda x: confirm_delete_relation('realizes', hardware, x,
-																	f'/hardware/{hardware.uid}/'))
+			Table('Realizes', hardware.realizes.order_by('fqn'), [
+				TableColumn('Name', 'name', lambda f: f'/function/{f.uid}/', 'fqn'),
+				TableColumn('Weight', lambda f: f.realized_by.relationship(hardware).weight)
+			], hardware, [
+					  Button(icon='add', tooltip='Add hardware realization',
+							 handler=f'/hardware/{hardware.uid}/realizes/new/')
+				  ], [
+					  Button(icon='edit', tooltip='Edit realization',
+							 handler=lambda x: goto(f'/hardware/{hardware.uid}/realizes/{x.uid}/update/')),
+					  Button(icon='delete', color='negative', tooltip='Delete realization',
+							 handler=lambda x: confirm_delete_relation('realizes', hardware, x,
+																	   f'/hardware/{hardware.uid}/'))
+				  ]).show()
 		with ui.card():
-			build_table('Affects', [
-				('Name', 'name'), ('Weight', ('affected_by', lambda sf: sf.relationship(hardware).weight))
-			], hardware.affects.order_by('fqn'),
-						create_url=f'/hardware/{hardware.uid}/affects/new/',
-						edit_fn=lambda x: goto(f'/hardware/{hardware.uid}/affects/{x.uid}/update/'),
-						delete_fn=lambda x: confirm_delete_relation('affects', hardware, x,
-																	f'/hardware/{hardware.uid}/'))
+			Table('Affects', hardware.affects.order_by('fqn'), [
+				TableColumn('Name', 'name', lambda f: f'/function/{f.uid}/', 'fqn'),
+				TableColumn('Weight', lambda f: f.affected_by.relationship(hardware).weight)
+			], hardware, [
+					  Button(icon='add', tooltip='Add hardware side-effect',
+							 handler=f'/hardware/{hardware.uid}/affects/new/')
+				  ], [
+					  Button(icon='edit', tooltip='Edit side-effect',
+							 handler=lambda x: goto(f'/hardware/{hardware.uid}/affects/{x.uid}/update/')),
+					  Button(icon='delete', color='negative', tooltip='Delete side-effect',
+							 handler=lambda x: confirm_delete_relation('affects', hardware, x,
+																	   f'/hardware/{hardware.uid}/'))
+				  ]).show()
 		with ui.card():
-			build_table('Observed by', [
-				('FQN', 'fqn'), ('Weight', ('observed_hardware', lambda sf: sf.relationship(hardware).weight))
-			], hardware.observed_by.order_by('fqn'),
-						detail_url='/observable/{}/',
-						create_url=f'/hardware/{hardware.uid}/observedby/new/',
-						edit_fn=lambda x: goto(f'/hardware/{hardware.uid}/observedby/{x.uid}/update/'),
-						delete_fn=lambda x: confirm_delete_relation('observed_by', hardware, x,
-																	f'/hardware/{hardware.uid}/'))
+			Table('Observed by', hardware.observed_by.order_by('fqn'), [
+				TableColumn('Name', 'name', lambda f: f'/function/{f.uid}/', 'fqn'),
+				TableColumn('Weight', lambda o: o.observed_hardware.relationship(hardware).weight)
+			], hardware, [
+					  Button(icon='add', tooltip='Add observable', handler=f'/hardware/{hardware.uid}/observedby/new/')
+				  ], [
+					  Button(icon='edit', tooltip='Edit observable',
+							 handler=lambda x: goto(f'/hardware/{hardware.uid}/observedby/{x.uid}/update/')),
+					  Button(icon='delete', color='negative', tooltip='Delete observable',
+							 handler=lambda x: confirm_delete_relation('observed_by', hardware, x,
+																	   f'/hardware/{hardware.uid}/'))
+				  ]).show()
 
 
 # REALIZES RELATION

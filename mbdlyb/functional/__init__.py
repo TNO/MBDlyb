@@ -4,8 +4,9 @@
 	All rights reserved.
 """
 from .base import (FunctionalNode, Cluster, Function, Hardware, DiagnosticTest, DiagnosticTestResult, DirectObservable,
-				   OperatingMode, FunctionalRelation, SubfunctionOfRelation, RequiredForRelation, RealizesRelation,
-				   ObservedByRelation, AffectsRelation, SelectOperatingModeRelation, IndicatedByRelation,
-				   ResultsInRelation)
+				   ObservedError, OperatingMode, FunctionalRelation, SubfunctionOfRelation, RequiredForRelation,
+				   RealizesRelation, ObservedByRelation, AffectsRelation, SelectOperatingModeRelation,
+				   IndicatedByRelation, ResultsInRelation, CommunicatesThroughRelation, ReportsErrorRelation,
+				   YieldsErrorRelation)
 from .analyzer import Analyzer, DPTreeNode
 from .diagnoser import Diagnoser

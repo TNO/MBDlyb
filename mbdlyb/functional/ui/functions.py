@@ -7,49 +7,60 @@
 from neomodel import db
 from nicegui import ui, APIRouter
 
-import mbdlyb
+import mbdlyb.functional as fn
 from mbdlyb.functional.gdb import Cluster, Function, DirectObservable, DiagnosticTest
 from mbdlyb.ui.helpers import get_object_or_404, get_relation_or_404
 
-from .base import Button, page, build_table, confirm_delete, confirm_delete_relation
+from .base import Button, page, TableColumn, Table, confirm_delete, confirm_delete_relation
 from .helpers import (goto, save_object, save_new_object, SubfunctionOfRelation, RequiredForRelation, ObservesRelation,
-					  TestsRelation)
+					  TestsRelation, node_cpt, StateTable, state_table)
 from .validation import base_name_validation
 
 
 router = APIRouter()
 
 
-def function_form(function: Function, cluster: Cluster, update: bool = True):
+def function_form(function: Function, states: StateTable, cluster: Cluster, update: bool = True):
 	ui.input('Name', validation=base_name_validation(cluster, function if update else None)) \
 		.bind_value(function, 'name').props('hide-bottom-space')
+	state_table(states, fn.Function.DEFAULT_STATES)
 
 
 @router.page('/cluster/{cluster_id}/function/new/')
 def function_create(cluster_id: str):
+	def _save(function: Function, states: StateTable, cluster: Cluster):
+		function.states = states.to_list()
+		save_new_object(function, cluster)
+
 	cluster = get_object_or_404(Cluster, uid=cluster_id)
 	if cluster is None:
 		return
 
 	function = Function(name='')
+	states = StateTable.from_list(function.states_)
 	page(f'New function in {cluster.name}', cluster, [
 		Button('Discard', None, 'warning', lambda: goto(f'/cluster/{cluster.uid}/')),
-		Button('Save', 'save', None, lambda: save_new_object(function, cluster))
+		Button('Save', 'save', None, lambda: _save(function, states, cluster))
 	])
-	function_form(function, cluster, False)
+	function_form(function, states, cluster, False)
 
 
 @router.page('/function/{function_id}/update/')
 def function_update(function_id: str):
+	def _save(function: Function, states: StateTable, red_url: str):
+		function.states = states.to_list()
+		save_object(function, red_url)
+
 	function: Function = get_object_or_404(Function, uid=function_id)
 	if function is None:
 		return
 	cluster = function.get_net()
+	states = StateTable.from_list(function.states_)
 	page(f'Update {function.fqn}', cluster, [
 		Button('Discard', None, 'warning', lambda: goto(f'/cluster/{cluster.uid}/')),
-		Button('Save', 'save', None, lambda: save_object(function, f'/cluster/{cluster.uid}/'))
+		Button('Save', 'save', None, lambda: _save(function, states, f'/cluster/{cluster.uid}/'))
 	])
-	function_form(function, cluster)
+	function_form(function, states, cluster)
 
 
 @router.page('/function/{function_id}/')
@@ -59,10 +70,15 @@ def function_details(function_id: str):
 		return
 	cluster: Cluster = function.get_net()
 	buttons = [
+		Button(None, 'border_all', 'secondary', lambda: goto(f'/function/{function.uid}/cpt/'), 'Modify CPT'),
 		Button(None, 'edit', None, lambda: goto(f'/function/{function.uid}/update/'), 'Edit function'),
 		Button(None, 'delete', 'negative', lambda: confirm_delete(function, f'/cluster/{cluster.uid}/'),
 			   'Delete function')]
 	page(f'Function {function.name}', cluster, buttons)
+	if function.has_custom_states:
+		with ui.row():
+			ui.label('Custom states')
+			ui.label(' | '.join(function.states))
 	for label, rel, target, fn in (('Subfunction of', 'subfunction_of', 'function', None),
 								   ('Realized by', 'realized_by', 'hardware', None),
 								   ('Requires', 'requires', 'function', None),
@@ -74,33 +90,48 @@ def function_details(function_id: str):
 					ui.link(sf.name, f'/{target}/{(sf if fn is None else fn(sf)).uid}/').tooltip(sf.fqn)
 	with ui.grid(columns='1fr 1fr').classes('w-full'):
 		with ui.card():
-			build_table('Subfunctions', [
-				('FQN', 'fqn'), ('Weight', ('subfunction_of', lambda sf: sf.relationship(function).weight))
-			], function.subfunctions.order_by('fqn'),
-						detail_url='/function/{}/',
-						create_url=f'/function/{function.uid}/subfunction/new/',
-						edit_fn=lambda x: goto(f'/function/{function.uid}/subfunction/{x.uid}/update/'),
-						delete_fn=lambda x: confirm_delete_relation('subfunctions', function, x,
-																	f'/function/{function.uid}/'))
+			Table('Subfunctions', function.subfunctions.order_by('fqn'), [
+				TableColumn('Name', 'name', lambda f: f'/function/{f.uid}/', 'fqn'),
+				TableColumn('Weight', lambda sf: sf.subfunction_of.relationship(function).weight)
+			], function, [
+					  Button(icon='add', color='primary', handler=f'/function/{function.uid}/subfunction/new/',
+							 tooltip='Add subfunction')
+				  ], [
+					  Button(icon='edit', tooltip=f'Edit subfunction relation',
+							 handler=lambda x: goto(f'/function/{function.uid}/subfunction/{x.uid}/update/')),
+					  Button(icon='delete', color='negative', tooltip=f'Delete subfunction relation',
+							 handler=lambda x: confirm_delete_relation('subfunctions', function, x,
+																	   f'/function/{function.uid}/'))
+				  ]).show()
 		if not function.has_subfunctions or function.required_for:
 			with ui.card():
-				build_table('Required for', [
-					('FQN', 'fqn'), ('Weight', ('requires', lambda df: df.relationship(function).weight))
-				], function.required_for.order_by('fqn'),
-							detail_url='/function/{}/',
-							create_url=f'/function/{function.uid}/requiredfor/new/' if not function.has_subfunctions else None,
-							edit_fn=lambda x: goto(f'/function/{function.uid}/requiredfor/{x.uid}/update/'),
-							delete_fn=lambda x: confirm_delete_relation('required_for', function, x,
-																		f'/function/{function.uid}/'))
+				Table('Required for', function.required_for.order_by('fqn'), [
+					TableColumn('Name', 'name', lambda f: f'/function/{f.uid}/', 'fqn'),
+					TableColumn('Weight', lambda rf: rf.requires.relationship(function).weight)
+				], function, [
+						  Button(icon='add', color='primary', handler=f'/function/{function.uid}/requiredfor/new/',
+								 tooltip='Add requires relation')
+					  ], [
+						  Button(icon='edit', tooltip=f'Edit requirement',
+								 handler=lambda x: goto(f'/function/{function.uid}/requiredfor/{x.uid}/update/')),
+						  Button(icon='delete', color='negative', tooltip=f'Delete requirement',
+								 handler=lambda x: confirm_delete_relation('required_for', function, x,
+																		   f'/function/{function.uid}/'))
+					  ]).show()
 		with ui.card():
-			build_table('Observed by', [
-				('FQN', 'fqn'), ('Weight', ('observed_functions', lambda sf: sf.relationship(function).weight))
-			], function.observed_by.order_by('fqn'),
-						detail_url='/observable/{}/',
-						create_url=f'/function/{function.uid}/observedby/new/',
-						edit_fn=lambda x: goto(f'/function/{function.uid}/observedby/{x.uid}/update/'),
-						delete_fn=lambda x: confirm_delete_relation('observed_by', function, x,
-																	f'/function/{function.uid}/'))
+			Table('Observed by', function.observed_by.order_by('fqn'), [
+				TableColumn('Name', 'name', lambda f: f'/observable/{f.uid}/', 'fqn'),
+				TableColumn('Weight', lambda o: o.observed_functions.relationship(function).weight)
+			], function, [
+					  Button(icon='add', color='primary', handler=f'/function/{function.uid}/observedby/new/',
+							 tooltip='Add observer')
+				  ], [
+					  Button(icon='edit', tooltip=f'Edit observable relation',
+							 handler=lambda x: goto(f'/function/{function.uid}/observedby/{x.uid}/update/')),
+					  Button(icon='delete', color='negative', tooltip=f'Delete observable relation',
+							 handler=lambda x: confirm_delete_relation('observed_by', function, x,
+																	   f'/function/{function.uid}/'))
+				  ]).show()
 
 
 # SUBFUNCTION RELATION
@@ -456,3 +487,8 @@ def observes_relation_update(function_id: str, test_id: str):
 		Button('Save', 'save', None, lambda: t_relation.save(f'/function/{function.uid}/'))
 	])
 	tests_relation_form(t_relation)
+
+
+@router.page('/function/{function_id}/cpt/')
+def function_cpt(function_id: str):
+	node_cpt(Function, function_id, '/function/{}/')

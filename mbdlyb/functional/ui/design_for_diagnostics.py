@@ -5,15 +5,14 @@
 """
 import io
 import re
-from nicegui import ui, APIRouter, run
+from nicegui import ui, APIRouter, run, app
 from zipfile import ZipFile, ZIP_DEFLATED
 
 from mbdlyb.functional import Analyzer, DPTreeNode
 from mbdlyb.functional.gdb import Cluster
 from mbdlyb.ui.utils import Status, show_name, status
 
-from .base import header, footer, goto
-
+from .base import header, footer, goto, reasoner_class_dict
 
 router = APIRouter(prefix='/cluster/{cluster_id}')
 
@@ -35,7 +34,9 @@ class UIDesignForDiagnosticsData:
 
 	def reset(self):
 		self.cluster = Cluster.load(self._cluster_id)
-		self.analyzer = Analyzer(self.cluster)
+		reasoner_klass_name = app.storage.general.get('reasoner')
+		reasoner_klass = reasoner_class_dict[reasoner_klass_name]
+		self.analyzer = Analyzer(self.cluster, reasoner_klass)
 		self.results_available = False
 		show_name.refresh(self.cluster.name)
 
@@ -246,7 +247,7 @@ def diagnostic_procedures(data: UIDesignForDiagnosticsData, export_button: ui.bu
 				}
 				mm = ui.mermaid(dpd.diagram, config=mermaid_config).classes('w-full')
 				mermaid_ids[dp_name] = mm.id
-	ui.html().bind_content_from(data, 'costs_text').bind_visibility_from(data, 'costs_visible')
+	ui.html(sanitize=False).bind_content_from(data, 'costs_text').bind_visibility_from(data, 'costs_visible')
 	ui.on('mermaid_click', lambda event: update_costs_label(*event.args))
 	
 	def export_start():

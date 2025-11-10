@@ -3,23 +3,81 @@
 	Copyright (c) 2023 - 2025 TNO-ESI
 	All rights reserved.
 """
+import asyncio
+import inspect
 from dataclasses import dataclass
-from typing import Optional, Callable, Iterable
+from typing import Optional, Callable, Iterable, Union, Any
 
 from nicegui import app, ui
 
+from mbdlyb.formalisms import BayesNetReasoner, TensorNetReasoner, MarkovNetReasoner
 from mbdlyb.functional.gdb import MBDElement, Cluster, FunctionalNode
 from mbdlyb.ui.helpers import goto
 
 
+reasoner_class_dict = {'BayesNetReasoner': BayesNetReasoner,
+					   'TensorNetReasoner': TensorNetReasoner,
+					   'MarkovNetReasoner': MarkovNetReasoner}
+
+
 @dataclass
 class Button:
-	'''Class for keeping track of button options'''
-	label: Optional[str] = None
-	icon: Optional[str] = None
-	color: Optional[str] = None
-	handler: Optional[str] = None
-	tooltip: Optional[str] = None
+	"""
+	Class for keeping track of button options
+	"""
+	label: Optional[str | Callable[[MBDElement], str]] = None
+	icon: Optional[str | Callable[[MBDElement], str]] = None
+	color: Optional[str | Callable[[MBDElement], str]] = None
+	handler: Optional[str | Callable[[], any] | Callable[[MBDElement], any]] = None
+	tooltip: Optional[str | Callable[[MBDElement], str]] = None
+
+	def show(self, obj: MBDElement = None, hide_label=False, btn_props: str = None, tooltip_classes: str = None):
+		with ui.button(text=None if hide_label else self._eval(self.label, obj), icon=self._eval(self.icon, obj),
+					   color=self._eval(self.color, obj), on_click=self._eval_handler(self.handler, obj)).props(
+				btn_props or ''):
+			if self.tooltip:
+				ui.tooltip(self._eval(self.tooltip)).classes(tooltip_classes or '')
+
+	def show_icon(self, obj: MBDElement = None, btn_props: str = None, tooltip_classes: str = None):
+		with ui.icon(self._eval(self.icon, obj), color=self._eval(self.color, obj)).on('click', self._eval_handler(
+				self.handler, obj)).classes('cursor-pointer').props(btn_props or ''):
+			if self.tooltip:
+				ui.tooltip(self._eval(self.tooltip, obj)).classes(tooltip_classes or '')
+
+	@staticmethod
+	def _eval(attr: Optional[str | Callable[[MBDElement], str]], obj: Optional[MBDElement] = None) -> Optional[str]:
+		if attr is None:
+			return None
+		if isinstance(attr, str):
+			return attr.format(obj.name if obj is not None else None)
+		elif isinstance(attr, Callable):
+			return attr(obj)
+		return attr
+
+	@staticmethod
+	def _eval_handler(attr: Optional[str | Callable[[], any] | Callable[[MBDElement], any]], obj: Optional[MBDElement] = None) -> Optional[Callable]:
+		if attr is None:
+			return None
+		if isinstance(attr, str):
+			return lambda: goto(attr)
+		elif isinstance(attr, Callable):
+			if obj is None:
+				return attr
+			return lambda: attr(obj)
+		return attr
+
+
+@dataclass
+class ConditionalButton(Button):
+	condition: Optional[Callable[[MBDElement], bool]] = None
+
+	def show(self, obj: MBDElement = None, hide_label=False, btn_props: str = None, tooltip_classes: str = None):
+		if self.condition is None or self.condition(obj):
+			super().show(obj, hide_label, btn_props, tooltip_classes)
+
+	def show_icon(self, obj: MBDElement = None, btn_props: str = None, tooltip_classes: str = None):
+		if self.condition is None or self.condition(obj):
+			super().show_icon(obj, btn_props, tooltip_classes)
 
 
 def build_menu_tree(parent: Cluster = None):
@@ -32,9 +90,7 @@ def build_menu_tree(parent: Cluster = None):
 def _buttons(buttons: list[list | Button]):
 	for button in buttons:
 		if isinstance(button, Button):
-			with ui.button(button.label or '', icon=button.icon, color=button.color or 'primary', on_click=button.handler).props('outline'):
-				if button.tooltip:
-					ui.tooltip(button.tooltip).classes('text-xs')
+			button.show(btn_props='outline', tooltip_classes='text-xs')
 		elif isinstance(button, list) and len(button) >= 2:
 			with ui.button_group():
 				_buttons(button)
@@ -51,6 +107,10 @@ def _settings(dialog: ui.dialog):
 		ui.label('Settings').classes('text-h5')
 		ui.switch('Model editor - show diagrams').bind_value(app.storage.general, 'show_diagrams').on_value_change(emit_show_diagram)
 		ui.switch('Functional diagnoser - auto-compute').bind_value(app.storage.general, 'auto_compute')
+
+		# Since the real class objects are not serializable, we store the reasoner class names:
+		ui.select({'BayesNetReasoner': 'BayesNet', 'TensorNetReasoner': 'TensorNet', 'MarkovNetReasoner': 'MarkovNet'},
+				  label='Reasoner').bind_value(app.storage.general, 'reasoner')
 
 
 def header(text: str, url: str = '/'):
@@ -95,66 +155,99 @@ def page(title: str = None, cluster: Cluster = None, buttons=None):
 				_buttons(buttons)
 
 
-def build_table(title: str, headers: list[tuple], rows: Iterable, detail_url: Optional[str] = None,
-				create_url: Optional[str] = None, edit_fn: Optional[Callable] = None,
-				delete_fn: Optional[Callable] = None, actions: list[tuple[str, Callable]] = ()):
-	has_actions = actions or edit_fn is not None or delete_fn is not None
-	with ui.row().classes('w-full'):
-		ui.label(title).classes('text-h6')
-		if create_url:
-			ui.space()
-			with ui.button(icon='add', color='positive', on_click=lambda: goto(create_url)).props('outline'):
-				if 'Weight' in [name for (name, _) in headers]:
-					tooltip_text = f'Add "{title.lower()}" relation'
-					tooltip_title = f'"{title.lower()}" relation with'
-				else:
-					tooltip_text = f'Add {title.lower().rstrip("s")}'
-					tooltip_title = title.lower().rstrip("s")
-				ui.tooltip(tooltip_text).classes('text-xs')
+@dataclass
+class TableColumn:
+	header: str
+	value: str | Callable[[MBDElement], str]
+	url: Optional[Callable[[MBDElement], str]] = None
+	tooltip: Optional[str | Callable[[MBDElement], str]] = None
 
-	with ui.grid(columns=' '.join(['auto'] * len(headers)) + (' 1fr' if has_actions else '')).classes('w-full gap-0'):
-		if not rows:
-			ui.label('No entries found.')
+	def show(self, obj: MBDElement, classes: Optional[str] = None, tooltip_classes: Optional[str] = None):
+		if isinstance(self.value, str):
+			label = obj.__getattribute__(self.value)
+		elif isinstance(self.value, Callable):
+			label = self.value(obj)
+		else:
 			return
-		for label, _ in headers:
-			ui.markdown(f'**{label}**').classes('border p-3')
-		if has_actions:
-			ui.label().classes('border p-3')
-		for o in rows:
-			for idx, (_, attribute) in enumerate(headers):
-				label = o.__getattribute__(attribute) if isinstance(attribute, str) else attribute[1](
-					o.__getattribute__(attribute[0]))
-				(ui.link(label, detail_url.format(o.uid)) if detail_url and idx == 0 else ui.label(label)).classes(
-					'border p-3')
-			if has_actions:
-				name = o.__getattribute__(headers[0][1])
-				with ui.element('div').classes('border p-3 w-full text-right'):
-					for icon, fn in actions:
-						if icon == 'subdirectory_arrow_right':
-							tooltip_text = f'Edit subfunctions of "{name}"'
-						elif icon == 'table_view':
-							tooltip_text = f'Edit tested items of "{name}"'
-						else:
-							None
-						ui.icon(icon, color='primary').on('click', lambda x=o: fn(x)).classes('cursor-pointer').tooltip(tooltip_text)
-					if edit_fn is not None:
-						tooltip_text = f'Edit {tooltip_title} "{name}"'
-						ui.icon('edit').on('click', lambda x=o: edit_fn(x)).classes('cursor-pointer').tooltip(tooltip_text)
-					if delete_fn is not None:
-						tooltip_text = f'Delete {tooltip_title} "{name}"'
-						ui.icon('delete', color='negative').on('click', lambda x=o: delete_fn(x)).classes(
-							'cursor-pointer').tooltip(tooltip_text)
+		with ui.row().classes(classes):
+			with (ui.link(label, self.url(obj)) if self.url else ui.label(label)):
+				if self.tooltip:
+					ui.tooltip(
+						obj.__getattribute__(self.tooltip) if isinstance(self.tooltip, str) else self.tooltip(
+							obj)).classes(tooltip_classes or '')
+
+
+@dataclass
+class TableMultiColumn(TableColumn):
+	list_attribute: str = None
+	order_by: Optional[str] = None
+	separator: Optional[str] = '	|'
+
+	def show(self, obj: MBDElement, classes: Optional[str] = None, tooltip_classes: Optional[str] = None):
+		elements = obj.__getattribute__(self.list_attribute) if not (
+					self.order_by or isinstance(self.value, str)) else obj.__getattribute__(
+			self.list_attribute).order_by(self.order_by or self.value)
+		if not elements:
+			ui.label().classes(classes or '')
+			return
+		l_idx = len(elements) - 1
+		with ui.row().classes(classes):
+			for idx, o in enumerate(elements):
+				super().show(o, 'inline')
+				if idx < l_idx:
+					ui.label(self.separator).classes('inline')
+
+
+@dataclass
+class Table:
+	title: str
+	rows: Iterable
+	columns: list[TableColumn]
+	obj: Optional[object] = None
+	table_actions: Optional[list[Button]] = None
+	row_actions: Optional[list[Button]] = None
+
+	def show(self):
+		with ui.row().classes('w-full'):
+			ui.label(self.title).classes('text-h6')
+			if self.table_actions:
+				ui.space()
+				for table_action in self.table_actions:
+					table_action.show(self.obj, btn_props='outline', tooltip_classes='text-xs')
+
+		def_classes = 'p-3 border border-gray-200'
+		with ui.grid(columns=' '.join(['auto'] * len(self.columns)) + (' 1fr' if self.row_actions else '')).classes('w-full gap-0'):
+			if not self.rows:
+				ui.label('No entries found.')
+				return
+			for column in self.columns:
+				ui.label(column.header).classes(f'font-bold {def_classes}')
+			if self.row_actions:
+				ui.label().classes(def_classes)
+			for o in self.rows:
+				for column in self.columns:
+					column.show(o, def_classes)
+				if self.row_actions:
+					with ui.element('div').classes(f'w-full text-right {def_classes}'):
+						for action in self.row_actions:
+							action.show_icon(o)
 
 
 # GENERIC DIALOGS
 
-def confirm(title: str, message: str, confirm_text: str, on_confirm: Callable, confirm_color: str = 'primary'):
+def confirm(title: str, message: str, confirm_text: str, on_confirm: Union[Callable, tuple[Callable, tuple[Any]]], confirm_color: str = 'primary'):
 	def _on_cancel():
 		dialog.close()
 		dialog.clear()
 
 	def _on_confirm():
-		on_confirm()
+		if isinstance(on_confirm, tuple):
+			oc_fn, args = on_confirm
+		else:
+			oc_fn, args = on_confirm, ()
+		_r = oc_fn(*args)
+		if inspect.iscoroutine(_r):
+			asyncio.create_task(_r)
 		_on_cancel()
 
 	with ui.dialog(value=True) as dialog, ui.card():

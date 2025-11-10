@@ -3,22 +3,26 @@
 	Copyright (c) 2023 - 2025 TNO-ESI
 	All rights reserved.
 """
+import html
 import os
+import re
 import tempfile
 import shutil
 from tempfile import TemporaryFile
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Optional, Callable, Union, Type
 from nicegui import app, ui, APIRouter, events, run
 from neomodel import db
+from multiprocessing import Manager, Queue
 
 import mbdlyb.functional as fn
-from mbdlyb.functional.gdb import (Cluster, Function, DirectObservable, DiagnosticTest, DiagnosticTestResult, Hardware,
-								   update_fqn, update_name)
+from mbdlyb.functional.gdb import (MBDElement, FunctionalNode, Cluster, Function, DirectObservable, DiagnosticTest,
+								   DiagnosticTestResult, Hardware, ObservedError, update_fqn, update_name,
+								   RequiredForRelation)
 from mbdlyb.ui.helpers import goto, get_object_or_404
 
-from .base import Button, page, build_table, confirm, confirm_delete
-from .helpers import save_object, save_new_object, RequiredForRelation
+from .base import Button, page, confirm, confirm_delete, TableColumn, TableMultiColumn, Table
+from .helpers import save_object, save_new_object
 from .validation import base_name_validation
 
 router = APIRouter(prefix='/cluster')
@@ -136,104 +140,165 @@ def move_cluster(obj) -> None:
 		dialog.on('close', dialog.clear)
 
 
-def create_mermaid_diagram(cluster: Cluster, render_direction: str) -> str:
+def create_mermaid_diagram(cluster: Cluster) -> str:
 	class_map = {
 		Function: 'Function',
 		Hardware: 'Hardware',
 		DirectObservable: 'DirectObservable',
+		ObservedError: 'ObservedError',
 		DiagnosticTest: 'DiagnosticTest',
 		DiagnosticTestResult: 'DiagnosticTestResult',
 	}
+	class_url_map = {
+		Cluster: '/cluster/{}/',
+		Function: '/function/{}/',
+		Hardware: '/hardware/{}/',
+		DirectObservable: '/observable/{}/',
+		DiagnosticTest: '/test/{}/',
+		DiagnosticTestResult: '/test/{}/'
+	}
+
+	def m_id(n: MBDElement | str) -> str:
+		""" Produce a suitable Mermaid ID, which contains only word characters """
+		return re.sub("\\W", "_", n if isinstance(n, str) else n.fqn)
+
+	def m_name(n: MBDElement | str, quote: bool = True) -> str:
+		""" Produce a suitable Mermaid name,
+		    surrounded by double quotes and where special characters are encoded properly
+		"""
+		name = html.escape(n if isinstance(n, str) else n.name)
+		if quote:
+			return f'"{name}"'
+		else:
+			return name
+
+	def m_url(node: MBDElement, at_root: bool) -> Optional[str]:
+		if isinstance(node, FunctionalNode) and not at_root:
+			return f'/cluster/{node.get_net().uid}/'
+		url = class_url_map.get(node.__class__, None)
+		if url:
+			url = url.format((node.test if isinstance(node, DiagnosticTestResult) else node).uid)
+		return url
+
+	def add_element(e: Union[Function, Hardware, DirectObservable, ObservedError, DiagnosticTest, DiagnosticTestResult],
+					url: str = None) -> str:
+		e_id = m_id(e)
+		diagram.append(f'{e_id}({m_name(e)})')
+		diagram.append(f'class {e_id} {class_map[e.__class__]}')
+		if url:
+			diagram.append('click {} call emitEvent("mermaid_click", "{}")'.format(e_id, url))
+		return e_id
+
+	def add_tree(t: dict, at_root: bool = False):
+		for name, te in t.items():
+			if isinstance(te, dict):
+				diagram.append(f'subgraph "{m_id(name)}" ["<b>{name}</b>"]')
+				add_tree(te)
+				diagram.append('end')
+			else:
+				url = m_url(te, at_root)
+				add_element(te, url)
+
+	def add_to_tree(tree: dict, element: Union[
+		Cluster, Function, Hardware, DirectObservable, ObservedError, DiagnosticTest, DiagnosticTestResult]) -> str:
+		path_segments = [m_name(s, False) for s in cluster.rfqn(element.fqn).split('.')]
+		_tree = tree
+		for path_segment in path_segments[:-1]:
+			if path_segment not in _tree:
+				_tree[path_segment] = dict()
+			_tree = _tree[path_segment]
+		_tree[element.name] = element
+		return m_id(element)
 
 	# start diagram as a flowchart with the main cluster
 	diagram = ['flowchart']
 	diagram.append(f'subgraph "{cluster.fqn}" ["<b>{cluster.name}</b>"]')
-	diagram.append(f'direction {render_direction}')
+	diagram.append('direction LR')
 
 	# add color mapping
 	diagram.append(f'classDef Function fill:{fn.Function.get_color()};')
 	diagram.append(f'classDef Hardware fill:{fn.Hardware.get_color()};')
 	diagram.append(f'classDef DirectObservable fill:{fn.DirectObservable.get_color()};')
+	diagram.append(f'classDef ObservedError fill:{fn.ObservedError.get_color()};')
 	diagram.append(f'classDef DiagnosticTest fill:{fn.DiagnosticTest.get_color()};')
 	diagram.append(f'classDef DiagnosticTestResult fill:{fn.DiagnosticTestResult.get_color()};')
 
-	# add functions and sub-functions
-	fn_list = set()
-	for f in sorted(cluster.functions, key=lambda f: f.fqn):
-		diagram.append(f'{f.fqn}({f.name})')
-		diagram.append(f'class {f.fqn} {class_map[f.__class__]}')
-		diagram.append(f'click {f.fqn} call emitEvent("mermaid_click", "/function/{f.uid}")')
-		fn_list.add(f.fqn)
-		for sf in sorted(f.subfunctions, key=lambda sf: sf.fqn):
-			if sf not in cluster.functions:
-				path = sf.get_path_to(f)
-				for p in path:
-					diagram.append(f'subgraph "{p.fqn}" ["<b>{p.name}</b>"]')
-				diagram.append(f'{sf.fqn}({sf.name})')
-				diagram.append(f'class {sf.fqn} {class_map[f.__class__]}')
-				diagram.append(f'click {sf.fqn} call emitEvent("mermaid_click", "/cluster/{sf.get_net().uid}")')
-				for p in path:
-					diagram.append('end')
-			diagram.append(f'{sf.fqn} --> |{fn.SubfunctionOfRelation.get_label()}| {f.fqn}')
-			fn_list.add(sf.fqn)
+	tree = dict()
 
-	# add hardware
-	hw_list = set()
-	for hw in sorted(cluster.hardware, key=lambda hw: hw.fqn):
-		diagram.append(f'{hw.fqn}[[{hw.name}]]')
-		diagram.append(f'class {hw.fqn} {class_map[hw.__class__]}')
-		diagram.append(f'click {hw.fqn} call emitEvent("mermaid_click", "/hardware/{hw.uid}")')
-		hw_list.add(hw.fqn)
+	# add functions and sub-functions, similarly with errors
+	fn_dict: dict[str, Function] = dict()
+	er_dict: dict[str, ObservedError] = dict()
+
+	relations: dict[Type[fn.FunctionalRelation], set[tuple[str, str]]] = {
+		fn.SubfunctionOfRelation: set(),
+		fn.RequiredForRelation: set(),
+		fn.RealizesRelation: set(),
+		fn.ResultsInRelation: set(),
+		fn.ObservedByRelation: set(),
+		fn.IndicatedByRelation: set(),
+		fn.YieldsErrorRelation: set(),
+		fn.ReportsErrorRelation: set()
+	}
+
+	# collect observables
+	for obs in cluster.observables:
+		obs_id = add_to_tree(tree, obs)
+		for on in obs.get_observed_nodes():
+			on_id = add_to_tree(tree, on)
+			relations[fn.ObservedByRelation].add((on_id, obs_id))
+
+	# collect tests and test results
+	for dt in cluster.tests:
+		dt_id = add_to_tree(tree, dt)
+		for tr in dt.test_results:
+			tr_id = add_to_tree(tree, tr)
+			for on in tr.get_observed_nodes():
+				if isinstance(on, Function) and on.fqn not in fn_dict:
+					fn_dict[on.fqn] = on
+				on_id = add_to_tree(tree, on)
+				relations[fn.IndicatedByRelation].add((on_id, tr_id))
+			relations[fn.ResultsInRelation].add((dt_id, tr_id))
+
+	# collect functions
+	for f in cluster.functions:
+		f_id = add_to_tree(tree, f)
+		fn_dict[f.fqn] = f
+		for sf in f.subfunctions:
+			sf_id = add_to_tree(tree, sf)
+			relations[fn.SubfunctionOfRelation].add((sf_id, f_id))
+			fn_dict[sf.fqn] = sf
+		for ye in f.yields_error:
+			ye_id = add_to_tree(tree, ye)
+			relations[fn.YieldsErrorRelation].add((f_id, ye_id))
+			if ye not in er_dict:
+				er_dict[ye.fqn] = ye
+		for er in f.reports_error:
+			er_id = add_to_tree(tree, er)
+			relations[fn.ReportsErrorRelation].add((f_id, er_id))
+			if er not in er_dict:
+				er_dict[er.fqn] = er
+
+	# collect hardware
+	for hw in cluster.hardware:
+		hw_id = add_to_tree(tree, hw)
 		for f in hw.realizes:
-			diagram.append(f'{hw.fqn} --> |{fn.RealizesRelation.get_label()}| {f.fqn}')
+			relations[fn.RealizesRelation].add((hw_id, m_id(f)))
 
-	# add observables, tests and test-results
-	for obs in sorted(cluster.observables, key=lambda obs: obs.fqn):
-		diagram.append(f'{obs.fqn}[{obs.name}]')
-		diagram.append(f'class {obs.fqn} {class_map[obs.__class__]}')
-		diagram.append(f'click {obs.fqn} call emitEvent("mermaid_click", "/observable/{obs.uid}")')
-		for f in obs.observed_functions:
-			diagram.append(f'{f.fqn} --> |{fn.ObservedByRelation.get_label()}| {obs.fqn}')
-		for h in obs.observed_hardware:
-			diagram.append(f'{h.fqn} --> |{fn.ObservedByRelation.get_label()}| {obs.fqn}')
-	for tr in sorted(cluster.test_results, key=lambda tr: tr.fqn):
-		diagram.append(f'{tr.fqn}[{tr.name}]')
-		diagram.append(f'class {tr.fqn} {class_map[tr.__class__]}')
-		for f in tr.indicated_functions:
-			if f.fqn not in fn_list:
-				diagram.append(f'subgraph "{f.get_net().fqn}" ["<b>{f.get_net().name}</b>"]')
-				diagram.append(f'{f.fqn}({f.name})')
-				diagram.append(f'class {f.fqn} {class_map[f.__class__]}')
-				diagram.append(f'click {f.fqn} call emitEvent("mermaid_click", "/cluster/{f.get_net().uid}")')
-				diagram.append('end')
-				fn_list.add(f.fqn)
-			diagram.append(f'{f.fqn} --> |{fn.IndicatedByRelation.get_label()}| {tr.fqn}')
-		for h in tr.indicated_hardware:
-			if h.fqn not in hw_list:
-				diagram.append(f'subgraph "{h.get_net().fqn}" ["<b>{h.get_net().name}</b>"]')
-				diagram.append(f'{h.fqn}[[{h.name}]]')
-				diagram.append(f'class {h.fqn} {class_map[h.__class__]}')
-				diagram.append(f'click {h.fqn} call emitEvent("mermaid_click", "/cluster/{h.get_net().uid}")')
-				diagram.append('end')
-				hw_list.add(h.fqn)
-			diagram.append(f'{h.fqn} --> |{fn.IndicatedByRelation.get_label()}| {tr.fqn}')
-	for tst in sorted(cluster.tests, key=lambda tst: tst.fqn):
-		diagram.append(f'{tst.fqn}{{{{{tst.name}}}}}')
-		diagram.append(f'class {tst.fqn} {class_map[tst.__class__]}')
-		diagram.append(f'click {tst.fqn} call emitEvent("mermaid_click", "/test/{tst.uid}")')
-		for tr in tst.test_results:
-			diagram.append(f'{tst.fqn} --> |{fn.ResultsInRelation.get_label()}| {tr.fqn}')
-			diagram.append(f'click {tr.fqn} call emitEvent("mermaid_click", "/test/{tst.uid}")')
+	# collect required_for relations
+	for f in fn_dict.values():
+		for dependent_f in f.required_for.all():
+			if dependent_f.fqn in fn_dict:
+				relations[fn.RequiredForRelation].add((m_id(f), m_id(dependent_f)))
+
+	# draw the schema
+	add_tree(tree, True)
+	for rt, links in relations.items():
+		for x, y in links:
+			diagram.append(f'{x} --> |{rt.get_label()}| {y}')
 
 	# close main cluster
 	diagram.append('end')
 	return '\n'.join(diagram)
-
-
-def check_mermaid_size(cluster: Cluster, save_button: ui.menu_item, render_direction: str, sizes: dict):
-	# if the <svg> fills the entire <div>, and the diagram is rendered Top-to-Bottom, render it Left-to-Right
-	if sizes.get('svg', 0) >= sizes.get('div', 0) and render_direction == 'TB':
-		draw_mermaid_diagram.refresh(cluster, save_button, 'LR')
 
 
 # CLUSTER METHODS
@@ -381,78 +446,110 @@ def cluster_details(cluster_id: str):
 			draw_mermaid_diagram(cluster, save_button)
 			ui.on('show_diagram', lambda: draw_mermaid_diagram.refresh(cluster, save_button))
 		with ui.card().classes('w-full'):
-			build_table('Functions', [
-				('Name', 'name'),
-				('Subfunctions', ('subfunctions', lambda x: ' | '.join(map(lambda y: y.fqn, x.all())))),
-				('Required for', ('required_for', lambda x: ' | '.join(map(lambda y: y.fqn, x.all())))),
-				('Observed by', ('observed_by', lambda x: ' | '.join(map(lambda y: y.fqn, x.all())))),
-				('Indicated by', ('indicated_by', lambda x: ' | '.join(map(lambda y: y.fqn, x.order_by('fqn')))))
-			], cluster.functions.order_by('name'),
-						detail_url='/function/{}/',
-						create_url=f'/cluster/{cluster.uid}/function/new/',
-						edit_fn=lambda x: goto(f'/function/{x.uid}/update/'),
-						delete_fn=lambda x: confirm_delete(x, f'/cluster/{cluster.uid}/'),
-						actions=[('subdirectory_arrow_right', lambda x: goto(f'/function/{x.uid}/subfunction/'))])
+			Table('Functions', cluster.functions.order_by('name'), [
+				TableColumn('Name', 'name', lambda f: f'/function/{f.uid}/', 'fqn'),
+				TableMultiColumn('Subfunctions', 'name', lambda f: f'/function/{f.uid}/', 'fqn', 'subfunctions'),
+				TableMultiColumn('Required for', 'name', lambda f: f'/function/{f.uid}/', 'fqn', 'required_for'),
+				TableMultiColumn('Observed by', 'name', lambda o: f'/observable/{o.uid}/', 'fqn', 'observed_by'),
+				TableMultiColumn('Indicated by', 'name', lambda o: f'/test/{o.test.uid}/', 'fqn', 'indicated_by')
+			], cluster, [
+					  Button(icon='add', color='positive', tooltip='Add function',
+							 handler=f'/cluster/{cluster.uid}/function/new/')
+				  ], [
+					  Button(icon='border_all', color='secondary', tooltip='Modify CPT for {}',
+							 handler=lambda f: goto(f'/function/{f.uid}/cpt/')),
+					  Button(icon='edit', tooltip='Edit {}', handler=lambda f: goto(f'/function/{f.uid}/update/')),
+					  Button(icon='delete', color='negative', tooltip='Delete {}',
+							 handler=lambda f: confirm_delete(f, f'/cluster/{cluster.uid}/'))
+				  ]).show()
 		if not cluster.at_root:
 			with ui.card().classes('w-full'):
-				build_table('Hardware', [
-					('Name', 'name'),
-					('Faults', ('fault_rates', lambda x: ' | '.join([f'{key}: {value}' for key, value in x.items()]))),
-					('Realizes', ('realizes', lambda x: ' | '.join(map(lambda y: y.name, x.all())))),
-					('Observed by', ('observed_by', lambda x: ' | '.join(map(lambda y: y.fqn, x.all())))),
-					('Indicated by', ('indicated_by', lambda x: ' | '.join(map(lambda y: y.fqn, x.order_by('fqn')))))
-				], cluster.hardware.order_by('name'),
-							detail_url='/hardware/{}/',
-							create_url=f'/cluster/{cluster.uid}/hardware/new/',
-							edit_fn=lambda x: goto(f'/hardware/{x.uid}/update/'),
-							delete_fn=lambda x: confirm_delete(x, f'/cluster/{cluster.uid}/'))
+				Table('Hardware', cluster.hardware.order_by('name'), [
+					TableColumn('Name', 'name', lambda h: f'/hardware/{h.uid}/', 'fqn'),
+					TableColumn('Faults',
+								lambda h: ' | '.join([f'{key}: {value}' for key, value in h.fault_rates.items()])),
+					TableMultiColumn('Realizes', 'name', lambda f: f'/function/{f.uid}/', 'fqn', 'realizes'),
+					TableMultiColumn('Observed by', 'name', lambda o: f'/observable/{o.uid}/', 'fqn', 'observed_by'),
+					TableMultiColumn('Indicated by', 'name', lambda o: f'/test/{o.test.uid}/', 'fqn', 'indicated_by'),
+				], cluster, [
+						  Button(icon='add', color='positive', tooltip='Add hardware',
+								 handler=f'/cluster/{cluster.uid}/hardware/new/')
+					  ], [
+						  Button(icon='edit', tooltip='Edit {}', handler=lambda x: goto(f'/hardware/{x.uid}/update/')),
+						  Button(icon='delete', color='negative', tooltip='Delete {}',
+								 handler=lambda x: confirm_delete(x, f'/cluster/{cluster.uid}/'))
+					  ]).show()
 		with ui.card().classes('w-full'):
-			build_table('Clusters', [
-				('Name', 'name'),
-				('Functions', ('functions', lambda x: ' | '.join(map(lambda y: y.name, x.all())))),
-				('Hardware', ('hardware', lambda x: ' | '.join(map(lambda y: y.name, x.all())))),
-				('Observables', ('observables', lambda x: ' | '.join(map(lambda y: y.name, x.all())))),
-				('Diagnostic tests', ('tests', lambda x: ' | '.join(map(lambda y: y.name, x.all()))))
-			], cluster.subnets.order_by('name'), detail_url='/cluster/{}/',
-						create_url=f'/cluster/{cluster.uid}/new/')
+			Table('Clusters', cluster.subnets.order_by('name'), [
+				TableColumn('Name', 'name', lambda c: f'/cluster/{c.uid}/', 'fqn'),
+				TableMultiColumn('Functions', 'name', lambda f: f'/function/{f.uid}/', 'fqn', 'functions'),
+				TableMultiColumn('Hardware', 'name', lambda h: f'/hardware/{h.uid}/', 'fqn', 'hardware'),
+				TableMultiColumn('Observables', 'name', lambda o: f'/observable/{o.uid}/', 'fqn', 'observables'),
+				TableMultiColumn('Diagnostic tests', 'name', lambda t: f'/test/{t.uid}/', 'fqn', 'tests')
+			], cluster, [
+					  Button(icon='add', color='positive', tooltip='Add cluster',
+							 handler=f'/cluster/{cluster.uid}/new/')
+				  ]).show()
 		with ui.card().classes('w-full'):
-			build_table('Observables', [
-				('Name', 'name'), ('FPR', 'fp_rate'), ('FNR', 'fn_rate'),
-				('Observed functions',
-				 ('observed_functions', lambda x: ' | '.join(map(lambda y: y.fqn, x.order_by('fqn'))))),
-				('Observed hardware',
-				 ('observed_hardware', lambda x: ' | '.join(map(lambda y: y.fqn, x.order_by('fqn')))))
-			], cluster.observables.order_by('name'), detail_url='/observable/{}/',
-						create_url=f'/cluster/{cluster.uid}/observable/new/',
-						edit_fn=lambda x: goto(f'/observable/{x.uid}/update/'),
-						delete_fn=lambda x: confirm_delete(x, f'/cluster/{cluster.uid}/'))
+			Table('Observables', cluster.observables.order_by('name'), [
+				TableColumn('Name', 'name', lambda x: f'/observable/{x.uid}/', tooltip='fqn'),
+				TableColumn('FPR', 'fp_rate'),
+				TableColumn('FNR', 'fn_rate'),
+				TableMultiColumn('Observed functions', 'name', lambda x: f'/function/{x.uid}/', 'fqn',
+								 'observed_functions'),
+				TableMultiColumn('Observed hardware', 'name', lambda x: f'/hardware/{x.uid}/', 'fqn',
+								 'observed_hardware')
+			], cluster, [
+					  Button(icon='add', color='positive', tooltip='Add observable',
+							 handler=f'/cluster/{cluster.uid}/observable/new/')
+				  ], [
+					  Button(icon='border_all', color='secondary', tooltip='Update CPT of {}',
+							 handler=lambda x: goto(f'/observable/{x.uid}/cpt/')),
+					  Button(icon='edit', tooltip='Edit {}', handler=lambda x: goto(f'/observable/{x.uid}/update/')),
+					  Button(icon='delete', color='negative', tooltip='Delete {}',
+							 handler=lambda x: confirm_delete(x, f'/cluster/{cluster.uid}/'))
+				  ]).show()
 		with ui.card().classes('w-full'):
-			build_table('Diagnostic tests', [
-				('Name', 'name'),
-				('Costs', ('fixed_cost', lambda x: f'{sum(x.values())} ({", ".join(x.keys())})')),
-				('Results', ('test_results', lambda x: ' | '.join(f'{tr.name} ({", ".join(o.fqn for o in tr.get_observed_nodes())})' for tr in x.order_by('name'))))
-			], cluster.tests.order_by('name'), detail_url='/test/{}/',
-						create_url=f'/cluster/{cluster.uid}/test/new/',
-						edit_fn=lambda x: goto(f'/test/{x.uid}/update/'),
-						delete_fn=lambda x: confirm_delete(x, f'/cluster/{cluster.uid}/'))
+			Table('Diagnostic tests', cluster.tests.order_by('name'), [
+				TableColumn('Name', 'name', lambda t: f'/test/{t.uid}/', 'fqn'),
+				TableColumn('Costs', lambda t: f'{sum(t.fixed_cost.values())} ({", ".join(t.fixed_cost.keys())})'),
+				TableMultiColumn('Results', lambda r: f'{r.name} ({", ".join(o.name for o in r.get_observed_nodes())})',
+								 list_attribute='test_results')
+			], cluster, [
+					  Button(icon='add', color='positive', tooltip='Add diagnostic test',
+							 handler=f'/cluster/{cluster.uid}/test/new/')
+				  ], [
+					  Button(icon='edit', tooltip='Edit {}', handler=lambda t: goto(f'/test/{t.uid}/update/')),
+					  Button(icon='delete', color='negative', tooltip='Delete {}',
+							 handler=lambda t: confirm_delete(t, f'/cluster/{cluster.uid}/'))
+				  ]).show()
 		with ui.card().classes('w-full'):
-			build_table('Operating mode selectors', [
-				('Name', 'name'),
-				('Modes', ('operating_modes', lambda x: ' | '.join(x))),
-			], cluster.operating_modes.order_by('name'), detail_url='/opm/{}/',
-						create_url=f'/cluster/{cluster.uid}/opm/new/',
-						edit_fn=lambda x: goto(f'/opm/{x.uid}/update/'),
-						delete_fn=lambda x: confirm_delete(x, f'/cluster/{cluster.uid}/'))
+			Table('Operating mode selectors', cluster.operating_modes.order_by('name'), [
+				TableColumn('Name', 'name', lambda x: f'/opm/{x.uid}/', 'fqn'),
+				TableMultiColumn('Modes', lambda x: x, list_attribute='operating_modes')
+			], cluster, [
+					  Button(icon='add', color='positive', tooltip='Add operating mode',
+							 handler=f'/cluster/{cluster.uid}/opm/new/')
+				  ], [
+					  Button(icon='edit', tooltip='Edit {}', handler=lambda x: goto(f'/opm/{x.uid}/update/')),
+					  Button(icon='delete', color='negative', tooltip='Delete {}',
+							 handler=lambda x: confirm_delete(x, f'/cluster/{cluster.uid}/'))
+				  ]).show()
 
 @ui.refreshable
-def draw_mermaid_diagram(cluster: Cluster, save_button: ui.menu_item, render_direction: str = 'TB'):
-	mermaid_diagram = create_mermaid_diagram(cluster, render_direction)
+def draw_mermaid_diagram(cluster: Cluster, save_button: ui.menu_item):
+	mermaid_diagram = create_mermaid_diagram(cluster)
 	mermaid_config = {
 		'securityLevel': 'loose',
 		'theme': 'neutral',
 		'themeVariables': {
 			'fontSize': '14px'
-		}
+		},
+		'layout': 'elk',
+		'elk': {
+			'nodePlacementStrategy': 'LINEAR_SEGMENTS'
+		},
+		'maxTextSize': 1e6
 	}
 	mm = ui.mermaid(mermaid_diagram, config=mermaid_config).classes('w-full')
 	ui.on('mermaid_click', lambda event: goto(event.args))
@@ -467,25 +564,6 @@ def draw_mermaid_diagram(cluster: Cluster, save_button: ui.menu_item, render_dir
 	def export_store_svg(svg):
 		ui.download(svg.encode(), f'{cluster.name}.svg')
 	ui.on('mermaid_export', lambda evt: export_store_svg(evt.args))
-
-	# add JavaScript to check the size of the mermaid diagram (both on page-load and on resize)
-	ui.add_body_html(f'''
-		<script>
-			function checkMermaidSize() {{
-				div = document.querySelector("#c{mm.id}");
-				svg = document.querySelector("#c{mm.id} > svg");
-				if (div && svg) {{
-					emitEvent('mermaid_size', {{
-						div: div.offsetWidth,
-						svg: svg.clientWidth,
-					}});
-				}}
-			}}
-			window.onresize = checkMermaidSize;
-		</script>
-	''')
-	ui.on('mermaid_size', lambda evt: check_mermaid_size(cluster, save_button, render_direction, evt.args))
-	ui.run_javascript(f'checkMermaidSize();')
 
 
 # REQUIRED_FOR RELATION TABLE
@@ -560,7 +638,22 @@ class ClusterImportProps:
 		self.files: list[Path] = []
 
 
-def handle_upload(e: events.MultiUploadEventArguments, props: ClusterImportProps, suffix: str):
+# async def handle_upload(e: events.MultiUploadEventArguments, props: ClusterImportProps, suffix: str):
+# 	if props.parent is not None:
+# 		if props.parent.has_node(props.main_cluster_name):
+# 			ui.notify('Name already exists!')
+# 			return
+# 	else:
+# 		if props.main_cluster_name in {c.name for c in Cluster.nodes.has(net=False)}:
+# 			ui.notify('Name already exists!')
+# 			return
+# 	for f in e.files:
+# 		with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tf:
+# 			tf.write(await f.read())
+# 			props.files.append(Path(tf.name))
+
+
+async def handle_capella_upload(e: events.MultiUploadEventArguments, props: ClusterImportProps):
 	if props.parent is not None:
 		if props.parent.has_node(props.main_cluster_name):
 			ui.notify('Name already exists!')
@@ -569,44 +662,29 @@ def handle_upload(e: events.MultiUploadEventArguments, props: ClusterImportProps
 		if props.main_cluster_name in {c.name for c in Cluster.nodes.has(net=False)}:
 			ui.notify('Name already exists!')
 			return
-	for f in e.contents:
-		with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tf:
-			tf.write(f.read())
-			props.files.append(Path(tf.name))
 
-
-def handle_capella_upload(e: events.MultiUploadEventArguments, props: ClusterImportProps):
-	if props.parent is not None:
-		if props.parent.has_node(props.main_cluster_name):
-			ui.notify('Name already exists!')
-			return
-	else:
-		if props.main_cluster_name in {c.name for c in Cluster.nodes.has(net=False)}:
-			ui.notify('Name already exists!')
-			return
-
-	for f, name in zip(e.contents, e.names):
-		fd, tmp_path = tempfile.mkstemp(suffix=Path(name).suffix)
+	for f in e.files:
+		fd, tmp_path = tempfile.mkstemp(suffix=Path(f.name).suffix)
 		os.close(fd)
 
-		new_tmp_path = Path(tmp_path).with_name(name)
+		new_tmp_path = Path(tmp_path).with_name(f.name)
 		shutil.move(tmp_path, new_tmp_path)
 
 		with new_tmp_path.open('wb') as new_tf:
-			new_tf.write(f.read())
+			new_tf.write(await f.read())
 
 		props.files.append(new_tmp_path)
 
 
 def cluster_import_form(props: ClusterImportProps):
-	ui.input('Main cluster name', validation=base_name_validation(props.parent, None)) \
-		.bind_value(props,'main_cluster_name').props('hide-bottom-space')
-	ui.upload(label='Dependency table', multiple=True, on_multi_upload=lambda e: handle_upload(e, props, '.xlsx'),
-			  auto_upload=True).props('accept=.xlsx')
-	ui.upload(label='Connections', multiple=True, on_multi_upload=lambda e: handle_upload(e, props, '.json'),
-			  auto_upload=True).props('accept=.json')
+	# ui.input('Main cluster name', validation=base_name_validation(props.parent, None)) \
+	# 	.bind_value(props,'main_cluster_name').props('hide-bottom-space')
+	# ui.upload(label='Dependency table', multiple=True, on_multi_upload=lambda e: handle_upload(e, props, '.xlsx'),
+	# 		  auto_upload=True).props('accept=.xlsx')
+	# ui.upload(label='Connections', multiple=True, on_multi_upload=lambda e: handle_upload(e, props, '.json'),
+	# 		  auto_upload=True).props('accept=.json')
 
-	ui.label("Capella import").style('font-size: 140%')
+	# ui.label("Capella import").style('font-size: 140%')
 	ui.upload(label='Capella', multiple=True, on_multi_upload=lambda e: handle_capella_upload(e, props), auto_upload=True)
 	ui.select(["logical", "physical"], label="Capella architecture").bind_value(props, 'capella_architecture').classes('w-60')
 	with ui.row():
@@ -623,9 +701,11 @@ def cluster_import_form(props: ClusterImportProps):
 
 
 def cluster_import(parent_cluster: Optional[Cluster] = None):
-	async def _save(props: ClusterImportProps):
+	async def _save(props: ClusterImportProps, queue: Queue, progress_bar: ui.linear_progress, timer: ui.timer):
 		ui.notify('Importing model, please wait. This could take a long time, depending on the size of your model.')
 		if props.capella_architecture:
+			progress_bar.visible = True
+			timer.active = True
 			c: Cluster = await run.io_bound(
 				Cluster.load_capella,
 				props.capella_architecture,
@@ -634,7 +714,10 @@ def cluster_import(parent_cluster: Optional[Cluster] = None):
 				props.default_hw_tests,
 				props.default_ll_hw_tests,
 				props.import_opms,
-				*props.files)
+				*props.files,
+				queue=queue)
+			timer.active = False
+			progress_bar.visible = False
 		else:
 			await run.io_bound(Cluster.load_xls, props.main_cluster_name, *props.files)
 			c: Cluster = Cluster.nodes.has(net=False).get(name=props.main_cluster_name)
@@ -645,11 +728,20 @@ def cluster_import(parent_cluster: Optional[Cluster] = None):
 		goto(f'/cluster/{c.uid}/')
 
 	props = ClusterImportProps('', parent_cluster)
-	title = 'Import cluster'
+
+	queue: Queue = Manager().Queue()
+	progress_bar = ui.linear_progress(value=0., show_value=False, size='10px').classes('rounded').props(
+		'animation-speed:1000')
+	progress_bar.visible = False
+	timer = ui.timer(0.1,
+					 callback=lambda: progress_bar.set_value(queue.get() if not queue.empty() else progress_bar.value),
+					 active=False)
+
+	title = 'Capella import'
 	if parent_cluster is not None:
 		title += f' into {parent_cluster.fqn}'
 	page(title, parent_cluster, [
 		Button('Discard', None, 'warning', lambda: goto('/' if parent_cluster is None else f'/cluster/{parent_cluster.uid}/')),
-		Button('Save', None, 'primary', lambda: _save(props))
+		Button('Save', None, 'primary', lambda: _save(props, queue, progress_bar, timer))
 	])
 	cluster_import_form(props)

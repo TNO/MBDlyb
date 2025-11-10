@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from mbdlyb import MBDReasoner, MBDNet
-from mbdlyb.functional import Cluster, DiagnosticTest, DiagnosticTestResult, DirectObservable, Hardware
+from mbdlyb.functional import Cluster, DiagnosticTest, DiagnosticTestResult, DirectObservable, Hardware, FunctionalNode
 from mbdlyb.formalisms import select_reasoner
 
 from collections import defaultdict
@@ -181,6 +181,12 @@ class Diagnoser:
 		if evidence:
 			self._reasoner.add_evidence(evidence)
 
+	def unperform_diagnostic_test(self, diagnostic_test: DiagnosticTest):
+		if diagnostic_test not in self._performed_diagnostic_tests:
+			return
+		self.reasoner.drop_evidence(*diagnostic_test.test_results)
+		self._performed_diagnostic_tests.remove(diagnostic_test)
+
 	def reset(self, reasoner_klass: Type[MBDReasoner] = None):
 		# TODO: Make sure to reload the network!
 		if reasoner_klass:
@@ -217,6 +223,20 @@ class Diagnoser:
 
 		# insert remaining evidence (e.g. direct observables)
 		self._reasoner.add_evidence(evidence)
+
+	def drop_evidence(self, *nodes: Union[str, FunctionalNode]):
+		evidence_to_drop: set[str] = set()
+		for n in nodes:
+			fqn = n if isinstance(n, str) else n.fqn
+			if fqn in self._diagnostic_test_results:
+				dtr = self._diagnostic_test_results[n]
+				self.unperform_diagnostic_test(dtr.test)
+			elif fqn in self._diagnostic_tests:
+				self.unperform_diagnostic_test(self._diagnostic_tests[n])
+			else:
+				evidence_to_drop.add(fqn)
+		if evidence_to_drop:
+			self.reasoner.drop_evidence(*evidence_to_drop)
 
 	def add_operating_mode(self, operating_modes: dict[str, str]):
 		# filter knowledge graph based on the selected operating modes

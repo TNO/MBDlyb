@@ -13,10 +13,10 @@ from .markovnet import MarkovNet, MarkovNetReasoner
 
 def select_reasoner(net: MBDNet, reasoner_klass: Optional[Type[MBDReasoner]] = None) -> Union[BayesNetReasoner, TensorNetReasoner, MarkovNetReasoner]:
 	if reasoner_klass is None:
-		if isinstance(net, MarkovNet):
-			reasoner = MarkovNetReasoner(net)
-		elif isinstance(net, TensorNet):
+		if isinstance(net, TensorNet):
 			reasoner = TensorNetReasoner(net)
+		elif isinstance(net, MarkovNet):
+			reasoner = MarkovNetReasoner(net)
 		elif isinstance(net, BayesNet):
 			reasoner = BayesNetReasoner(net)
 		else:

@@ -3,56 +3,63 @@
 	Copyright (c) 2023 - 2025 TNO-ESI
 	All rights reserved.
 """
+import mbdlyb.functional as fn
+
 from nicegui import ui, APIRouter
 from neomodel import db
 from mbdlyb.functional.gdb import Cluster, Function, Hardware, DirectObservable
 from mbdlyb.ui.helpers import get_object_or_404, get_relation_or_404
 
-from .base import Button, page, build_table, confirm_delete, confirm_delete_relation, confirm
-from .helpers import goto, save_object, save_new_object, ObservesRelation
+from .base import Button, page, TableColumn, Table, confirm_delete, confirm_delete_relation, confirm
+from .helpers import goto, save_object, save_new_object, ObservesRelation, node_cpt, StateTable, state_table
 from .validation import base_name_validation
 
 
 router = APIRouter()
 
 
-def observable_form(observable: DirectObservable, cluster: Cluster, update: bool = True):
+def observable_form(observable: DirectObservable, states: StateTable, cluster: Cluster, update: bool = True):
 	ui.input('Name', validation=base_name_validation(cluster, observable if update else None)) \
 		.bind_value(observable, 'name').props('hide-bottom-space')
 	ui.number('False positive rate', min=0., max=1., step=.001).bind_value(observable, 'fp_rate')
 	ui.number('False negative rate', min=0., max=1., step=.001).bind_value(observable, 'fn_rate')
+	state_table(states, fn.DirectObservable.DEFAULT_STATES)
 
 
 @router.page('/cluster/{cluster_id}/observable/new/')
 def observable_create(cluster_id: str):
-	def _save(observable: Hardware, cluster: Cluster):
+	def _save(observable: Hardware, states: StateTable, cluster: Cluster):
+		observable.states = states.to_list()
 		save_new_object(observable, cluster)
 
 	cluster = get_object_or_404(Cluster, uid=cluster_id)
 	if cluster is None:
 		return
 	observable = DirectObservable(name='')
+	states = StateTable.from_list(observable.states_)
 	page(f'New observable in {cluster.name}', cluster, [
 		Button('Discard', None, 'warning', lambda: goto(f'/cluster/{cluster.uid}/')),
-		Button('Save', 'save', None, lambda: _save(observable, cluster))
+		Button('Save', 'save', None, lambda: _save(observable, states, cluster))
 	])
-	observable_form(observable, cluster, False)
+	observable_form(observable, states, cluster, False)
 
 
 @router.page('/observable/{observable_id}/update/')
 def observable_update(observable_id: str):
-	def _save(observable: Hardware):
+	def _save(observable: Hardware, states: StateTable):
+		observable.states = states.to_list()
 		save_object(observable, f'/cluster/{cluster.uid}/')
 
 	observable: DirectObservable = get_object_or_404(DirectObservable, uid=observable_id)
 	if observable is None:
 		return
 	cluster = observable.get_net()
+	states = StateTable.from_list(observable.states_)
 	page(f'Update {observable.fqn}', cluster, [
 		Button('Discard', None, 'warning', lambda: goto(f'/cluster/{cluster.uid}/')),
-		Button('Save', 'save', None, lambda: _save(observable))
+		Button('Save', 'save', None, lambda: _save(observable, states))
 	])
-	observable_form(observable, cluster)
+	observable_form(observable, states, cluster)
 
 
 @router.page('/observable/{observable_id}/')
@@ -66,6 +73,7 @@ def observable_details(observable_id: str):
 		return
 	cluster: Cluster = observable.get_net()
 	buttons = [
+		Button(None, 'border_all', 'secondary', lambda: goto(f'/observable/{observable.uid}/cpt/'), 'Modify CPT'),
 		Button(None, 'edit', None, lambda: goto(f'/observable/{observable.uid}/update/'), 'Edit observable'),
 		Button(None, 'delete', 'negative', lambda: confirm_delete(observable, f'/cluster/{cluster.uid}/'), 'Delete observable')]
 	if not (observable.at_root or cluster.at_root):
@@ -78,23 +86,33 @@ def observable_details(observable_id: str):
 		ui.label(f'{observable.fp_rate} / {observable.fn_rate}')
 	with ui.grid(columns='1fr 1fr').classes('w-full'):
 		with ui.card():
-			build_table('Observed functions', [
-				('FQN', 'fqn'), ('Weight', ('observed_by', lambda sf: sf.relationship(observable).weight))
-			], observable.observed_functions.order_by('fqn'),
-						detail_url='/function/{}/',
-						create_url=f'/observable/{observable.uid}/observes_fn/new/',
-						edit_fn=lambda x: goto(f'/observable/{observable.uid}/observes_fn/{x.uid}/update/'),
-						delete_fn=lambda x: confirm_delete_relation('observed_functions', observable, x,
-																	f'/observable/{observable.uid}/'))
+			Table('Observed functions', observable.observed_functions.order_by('fqn'), [
+				TableColumn('Name', 'name', lambda f: f'/function/{f.uid}/', 'fqn'),
+				TableColumn('Weight', lambda f: observable.observed_functions.relationship(f).weight)
+			], observable, [
+					  Button(icon='add', color='positive', tooltip='Add observed function',
+							 handler=f'/observable/{observable.uid}/observes_fn/new/')
+				  ], [
+					  Button(icon='edit', tooltip='Edit observed function',
+							 handler=lambda x: goto(f'/observable/{observable.uid}/observes_fn/{x.uid}/update/')),
+					  Button(icon='delete', color='negative', tooltip='Delete observed function',
+							 handler=lambda x: confirm_delete_relation('observed_functions', observable, x,
+																	   f'/observable/{observable.uid}/'))
+				  ]).show()
 		with ui.card():
-			build_table('Observed hardware', [
-				('FQN', 'fqn'), ('Weight', ('observed_by', lambda sf: sf.relationship(observable).weight))
-			], observable.observed_hardware.order_by('fqn'),
-						detail_url='/hardware/{}/',
-						create_url=f'/observable/{observable.uid}/observes_hw/new/',
-						edit_fn=lambda x: goto(f'/observable/{observable.uid}/observes_hw/{x.uid}/update/'),
-						delete_fn=lambda x: confirm_delete_relation('observed_hardware', observable, x,
-																	f'/observable/{observable.uid}/'))
+			Table('Observed hardware', observable.observed_hardware.order_by('fqn'), [
+				TableColumn('Name', 'name', lambda h: f'/hardware/{h.uid}/', 'fqn'),
+				TableColumn('Weight', lambda f: observable.observed_hardware.relationship(f).weight)
+			], observable, [
+					  Button(icon='add', color='positive', tooltip='Add observed hardware',
+							 handler=f'/observable/{observable.uid}/observes_hw/new/')
+				  ], [
+					  Button(icon='edit', tooltip='Edit observed hardware',
+							 handler=lambda x: goto(f'/observable/{observable.uid}/observes_hw/{x.uid}/update/')),
+					  Button(icon='delete', color='negative', tooltip='Delete observed hardware',
+							 handler=lambda x: confirm_delete_relation('observed_hardware', observable, x,
+																	   f'/observable/{observable.uid}/'))
+				  ]).show()
 
 
 # OBSERVES FORM
@@ -175,3 +193,8 @@ def observes_hw_relation_update(observable_id: str, hardware_id: str):
 		Button('Save', 'save', None, lambda: relation.save(f'/observable/{observable.uid}/'))
 	])
 	observes_relation_form(relation, 'Hardware')
+
+
+@router.page('/observable/{observable_id}/cpt/')
+def observable_cpt(observable_id: str):
+	node_cpt(DirectObservable, observable_id, '/observable/{}/')

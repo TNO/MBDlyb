@@ -5,7 +5,8 @@
 """
 from nicegui import ui, APIRouter, run
 
-from mbdlyb.functional.gdb import Cluster, FunctionalRelation, Error
+from mbdlyb.functional.gdb import Cluster
+from mbdlyb.functional.ui.messages import ValidationMessage
 from mbdlyb.ui.helpers import get_object_or_404, goto
 from mbdlyb.ui.utils import Status, status, show_name
 
@@ -19,24 +20,24 @@ class UIValidatorData:
 	_cluster_id: str = None
 	cluster: Cluster = None
 
-	errors: list[Error]
+	messages: list[ValidationMessage]
 
 	def __init__(self, cluster_id: str):
 		self._cluster_id = cluster_id
-		self.errors = []
+		self.messages = []
 
 	def reset(self):
 		self.cluster = get_object_or_404(Cluster, uid=self._cluster_id)
-		self.errors = []
+		self.messages = []
 		show_name.refresh(self.cluster.name)
 		status.refresh(Status.READY)
 
 	async def validate(self):
 		status.refresh(Status.COMPUTING)
-		self.errors = []
+		self.messages = []
 		self.cluster.refresh()
-		self.errors = await run.io_bound(self.cluster.check_errors)
-		show_validation_results.refresh(self.errors)
+		self.messages = sorted(await run.io_bound(self.cluster.validate))
+		show_validation_results.refresh(self.messages)
 		status.refresh(Status.READY)
 
 
@@ -54,23 +55,30 @@ def validator_main(cluster_id: str):
 		ui.space()
 		ui.button('Editor', icon='home', color='primary').on_click(lambda: goto(f'/cluster/{cluster_id}'))
 
-	show_validation_results(data.errors, False)
+	show_validation_results(data.messages, False)
 
 	data.reset()
 	btn.run_method('click')
 
 
 @ui.refreshable
-def show_validation_results(errors: list[Error], validated: bool = True):
-	if errors:
-		ui.label(
-			f'{len(errors)} error{"s were" if len(errors) > 1 else " was"} found:').classes('text-negative')
+def show_validation_results(messages: list[ValidationMessage], validated: bool = True):
+	if messages:
+		highest_prio = 9
+		text_class = None
+		for m in messages:
+			if m.priority < highest_prio:
+				highest_prio = m.priority
+				text_class = m.color
+		ui.label(f'{len(messages)} validation rule{"s were" if len(messages) > 1 else " was"} violated:').classes(
+			f'text-{text_class}')
 		with ui.grid(columns=2).classes('gap-0'):
-			for error in errors:
-				if error.has_fix_url:
-					ui.link(error.fix_label, error.fix_url, True).classes('text-negative').classes('border p-1')
+			for message in messages:
+				if message.has_fix_url:
+					ui.link(message.fix_label, message.fix_url, True).classes(f'text-{message.color} border p-1')
+
 				else:
 					ui.label('').classes('border p-1')
-				ui.label(error.message).classes('text-negative').classes('border p-1')
+				ui.label(message.message).classes(f'text-{message.color}').classes('border p-1')
 	elif validated:
 		ui.label('No issues were found.').classes('text-positive')

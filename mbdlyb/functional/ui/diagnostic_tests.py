@@ -9,7 +9,7 @@ from neomodel import db
 from mbdlyb.functional.gdb import Cluster, Function, Hardware, DiagnosticTest, DiagnosticTestResult
 from mbdlyb.ui.helpers import get_object_or_404, get_relation_or_404, goto
 
-from .base import Button, page, build_table, confirm_delete, confirm
+from .base import Button, page, confirm_delete, confirm, TableColumn, TableMultiColumn, Table, ConditionalButton
 from .helpers import save_object, save_new_object, TestsRelation
 from .validation import base_name_validation
 
@@ -145,7 +145,7 @@ def test_details(test_id: str):
 		return
 	cluster: Cluster = test.get_net()
 	buttons = [
-		Button(None, 'edit', None, lambda: goto(f'/test/{test.uid}/update/'), 'Edit diagnostic test'),
+		Button(None, 'edit', 'primary', f'/test/{test.uid}/update/', 'Edit diagnostic test'),
 		Button(None, 'delete', 'negative', lambda: confirm_delete(test, f'/cluster/{cluster.uid}/'),
 			   'Delete diagnostic test')]
 	if not (test.at_root or cluster.at_root):
@@ -159,17 +159,24 @@ def test_details(test_id: str):
 		ui.label(', '.join(f'{n}({c})' for n, c in test.fixed_cost.items()))
 	with ui.grid(columns='1fr 1fr').classes('w-full'):
 		with ui.card().classes('col-span-full'):
-			build_table('Test results', [
-				('Name', 'name'),
-				('FPR', 'fp_rate'),
-				('FNR', 'fn_rate'),
-				('Tested functions', ('indicated_functions', lambda fs: ' | '.join(f.fqn for f in fs.order_by('fqn')))),
-				('Tested hardware', ('indicated_hardware', lambda hs: ' | '.join(h.fqn for h in hs.order_by('fqn'))))
-			], test.test_results.order_by('name'),
-						create_url=f'/test/{test.uid}/results/new/',
-						edit_fn=lambda x: goto(f'/test_result/{x.uid}/update/'),
-						delete_fn=lambda x: confirm_delete(x, f'/test/{test.uid}/'),
-						actions=[('table_view', lambda x: goto(f'/test_result/{x.uid}/tests/'))])
+			Table('Test results', test.test_results.order_by('name'), [
+				TableColumn('Name', 'name', None, 'fqn'),
+				TableColumn('FPR', 'fp_rate', None, None),
+				TableColumn('FNR', 'fn_rate', None, None),
+				TableMultiColumn('Tested functions', 'name', None, 'fqn', 'indicated_functions'),
+				TableMultiColumn('Tested hardware', 'name', None, 'fqn', 'indicated_hardware')
+			], test, [
+					  Button(icon='add', color='positive', tooltip='Add test result',
+							 handler=f'/test/{test.uid}/results/new/')
+				  ], [
+					  Button(icon='border_all', color='secondary', tooltip='Update CPT of {}',
+							 handler=lambda x: goto(f'/test_result/{x.uid}/cpt/')),
+					  Button(icon='table_view', color='primary', tooltip='Edit tested items of {}',
+							 handler=lambda x: goto(f'/test_result/{x.uid}/tests/')),
+					  Button(icon='edit', tooltip='Edit {}', handler=lambda x: goto(f'/test_result/{x.uid}/update/')),
+					  Button(icon='delete', color='negative', tooltip='Delete {}',
+							 handler=lambda x: confirm_delete(x, f'/test/{test.uid}/'))
+				  ]).show()
 
 
 # TESTS RELATION FORM

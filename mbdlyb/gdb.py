@@ -4,7 +4,7 @@
 	All rights reserved.
 """
 from neomodel import (StructuredRel, StructuredNode, UniqueIdProperty, StringProperty, RelationshipTo, ZeroOrOne,
-					  RelationshipFrom)
+					  RelationshipFrom, ArrayProperty)
 from .base import first_diff_idx
 
 
@@ -74,7 +74,26 @@ class MBDElement(StructuredNode):
 
 
 class MBDNode(MBDElement):
-	pass
+	_DEFAULT_STATES = []
+	states_ = ArrayProperty(base_property=StringProperty(), default=[], db_property='states')
+
+	def parents(self) -> list['MBDNode']:
+		raise NotImplementedError
+
+	@property
+	def states(self) -> list[str]:
+		return self.states_ or self._DEFAULT_STATES
+
+	@states.setter
+	def states(self, states: list[str]):
+		if states == self._DEFAULT_STATES:
+			self.states_ = []
+		elif states != self.states_:
+			self.states_ = states
+
+	@property
+	def has_custom_states(self) -> bool:
+		return bool(self.states_)
 
 
 class MBDNet(MBDElement):

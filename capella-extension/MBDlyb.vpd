@@ -59,4 +59,25 @@
     </scope>
     <properties xsi:type="vpd:FloatProperty" id="_CWdZAA7bEfCWuZVqI8Q_SA" name="Fault rate" description="The probability that this particular component is faulty (if there is no additional diagnostic information available)" defaultValue="0.01"/>
   </groups>
+  <groups id="_j0x7AEIBEfCvFIoVyAPfJg" name="Error reporting">
+    <scope>
+      <rules xsi:type="vpd:EClassRule">
+        <classifier href="http://www.polarsys.org/capella/core/fa/7.0.0#//FunctionOutputPort"/>
+      </rules>
+      <architectures>LOGICAL</architectures>
+      <architectures>PHYSICAL</architectures>
+    </scope>
+    <properties xsi:type="vpd:BooleanProperty" id="_yEYNQEIBEfCvFIoVyAPfJg" name="Reporting errors" description="Whether this function is responsible for the (final) reporting of one or more errors towards the outer world."/>
+    <properties xsi:type="vpd:StringProperty" id="_-j3z0EIBEfCvFIoVyAPfJg" name="Error code" description="The unique error code that is reported when this function fails."/>
+  </groups>
+  <groups id="_y36qUFi7EfCrAba709ngQw" name="Composite">
+    <scope>
+      <rules xsi:type="vpd:EClassRule">
+        <classifier href="http://www.polarsys.org/capella/core/cs/7.0.0#//Component"/>
+      </rules>
+      <architectures>LOGICAL</architectures>
+      <architectures>PHYSICAL</architectures>
+    </scope>
+    <properties xsi:type="vpd:BooleanProperty" id="__JvoUFi7EfCrAba709ngQw" name="Complete composite" description="Whether or not this component is completely described by its subcomponents in the model. If this is true, the component itself cannot be broken, because any fault would be in one or more of its subcomponents"/>
+  </groups>
 </vpd:VpdRoot>

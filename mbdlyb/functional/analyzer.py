@@ -68,7 +68,7 @@ class Analyzer:
 		posteriors = self._reasoner.infer()
 		beliefs: dict[FunctionalNode, tuple[str, float]] = dict()
 		for observable, obs_posteriors in posteriors.iterrows():
-			beliefs[observable] = max(obs_posteriors.items(), key=lambda x: x[1])[0]
+			beliefs[observable] = obs_posteriors.idxmax()
 		return pd.Series(beliefs)
 
 	def compute_failure_observability(self) -> pd.DataFrame:

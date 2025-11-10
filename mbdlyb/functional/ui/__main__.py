@@ -6,7 +6,7 @@
 from argparse import ArgumentParser
 
 from neomodel import config
-from nicegui import app, ui
+from nicegui import app, ui, APIRouter
 
 from .base import page
 from .clusters import router as cluster_router
@@ -19,6 +19,13 @@ from .diagnostic_test_results import router as diagnostic_test_result_router
 from .diagnoser import router as diagnoser_router
 from .design_for_diagnostics import router as design_for_diagnostics_router
 from .validator import router as validator_router
+
+
+@ui.page('/')
+def landing_page():
+	page('Select a cluster to start editing...')
+	ui.link('...or create one!', target='/cluster/new/')
+	ui.link('You can also import a new cluster.', target='/cluster/import/')
 
 
 def run():
@@ -40,10 +47,8 @@ def run():
 	# reload default settings every time the server is restarted
 	app.storage.general['show_diagrams'] = True
 	app.storage.general['auto_compute'] = False
-
-	page('Select a cluster to start editing...')
-	ui.link('...or create one!', target='/cluster/new/')
-	ui.link('You can also import a new cluster.', target='/cluster/import/')
+	if not('reasoner' in app.storage.general.keys()):
+		app.storage.general['reasoner'] = 'BayesNetReasoner'
 
 	app.include_router(cluster_router)
 	app.include_router(function_router)

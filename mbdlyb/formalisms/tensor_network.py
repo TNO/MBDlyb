@@ -35,15 +35,22 @@ class TNElement(MBDElement):
 class TensorNode(TNElement, MBDNode):
 	_array_fn: Callable[[...], list[float]] = None
 
+	cpt_parents: list['TensorNode'] = None
+	cpt: list[list[float]] = None
+
+	@property
+	def has_cpt(self) -> bool:
+		return self.cpt is not None
+
 	@property
 	def parents_tn(self) -> list['TensorNode']:
-		return [pr.source for pr in self.parent_relations if isinstance(pr, TNRelation)]
+		return self.cpt_parents or [pr.source for pr in self.parent_relations if isinstance(pr, TNRelation)]
 
 	def create_tn_nodes(self, tn: qtn.TensorNetwork):
 		"""Creates a tensor node inside the tensor network tn"""
 
 		# add this node to the TN
-		edges = list(reversed([p.fqn for p in self.parents_tn])) + [self.fqn]
+		edges = (self.parents_tn if self.has_cpt else list(reversed([p.fqn for p in self.parents_tn]))) + [self.fqn]
 		tn.add_tensor(qtn.Tensor(data=self._compute_array(), inds=edges), tid=self.fqn + 'tensor')
 
 	def create_tn_connections(self, tn: qtn.TensorNetwork):
@@ -54,10 +61,13 @@ class TensorNode(TNElement, MBDNode):
 		self._array_fn = array_fn
 
 	def _compute_array(self) -> np.ndarray:
-		# I think this means that it will put the first parent as the last index of the array
-		shape = [len(p.states) for p in reversed(self.parents_tn)] + [len(self.states)]
-		params = list(product(*[[(p, v) for v in p.states] for p in reversed(self.parents_tn)]))
-		table = np.array([self._compute_array_line(dict(ps)) for ps in params]).flatten()
+		if self.has_cpt:
+			shape = [len(p.states) for p in self.parents_tn] + [len(self.states)]
+			table = np.array(self.cpt)
+		else:
+			shape = [len(p.states) for p in reversed(self.parents_tn)] + [len(self.states)]
+			params = list(product(*[[(p, v) for v in p.states] for p in reversed(self.parents_tn)]))
+			table = np.array([self._compute_array_line(dict(ps)) for ps in params]).flatten()
 		return np.reshape(table, shape)
 
 	def _compute_array_line(self, values: dict[MBDNode, str]) -> list[float]:
@@ -119,7 +129,6 @@ class TensorNet(TNElement, MBDNet):
 		tn = qtn.TensorNetwork([])
 		with self.create_reasoner_view():
 			self.create_tn_nodes(tn)
-		# TODO: We need to include the RequiredForRelation as a tensor node for the purpose of adding OR gates
 		return tn
 
 	def create_tn_nodes(self, tn: qtn.TensorNetwork):

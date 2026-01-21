@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-	Copyright (c) 2025 TNO-ESI
+	Copyright (c) 2025 - 2026 TNO-ESI
 	All rights reserved.
 """
-from nicegui import ui, APIRouter, run
+from nicegui import ui, APIRouter, run, app
 
 from mbdlyb.functional.gdb import Cluster
-from mbdlyb.functional.ui.messages import ValidationMessage
+from mbdlyb.ui.messages import ValidationMessage
 from mbdlyb.ui.helpers import get_object_or_404, goto
 from mbdlyb.ui.utils import Status, status, show_name
 
@@ -44,6 +44,7 @@ class UIValidatorData:
 @router.page('/validator/')
 def validator_main(cluster_id: str):
 	data: UIValidatorData = UIValidatorData(cluster_id)
+	editor_url = f'/cluster/{cluster_id}/'
 
 	header(f'Functional Model Validator')
 	footer()
@@ -53,7 +54,7 @@ def validator_main(cluster_id: str):
 		status(Status.COMPUTING)
 		btn = ui.button('Validate', icon='refresh', color='primary').on('click', lambda e: data.validate())
 		ui.space()
-		ui.button('Editor', icon='home', color='primary').on_click(lambda: goto(f'/cluster/{cluster_id}'))
+		ui.button(app.storage.general['mode'], icon='home', color='primary').on_click(lambda: goto(editor_url))
 
 	show_validation_results(data.messages, False)
 

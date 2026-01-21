@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-	Copyright (c) 2023 - 2025 TNO-ESI
+	Copyright (c) 2023 - 2026 TNO-ESI
 	All rights reserved.
 """
 from argparse import ArgumentParser
 
 from neomodel import config
-from nicegui import app, ui, APIRouter
+from nicegui import app, ui
 
 from .base import page
+from .helpers import goto, Button
 from .clusters import router as cluster_router
 from .functions import router as function_router
 from .hardware import router as hardware_router
@@ -19,13 +20,28 @@ from .diagnostic_test_results import router as diagnostic_test_result_router
 from .diagnoser import router as diagnoser_router
 from .design_for_diagnostics import router as design_for_diagnostics_router
 from .validator import router as validator_router
+from ..gdb import Cluster
 
 
 @ui.page('/')
 def landing_page():
-	page('Select a cluster to start editing...')
-	ui.link('...or create one!', target='/cluster/new/')
-	ui.link('You can also import a new cluster.', target='/cluster/import/')
+	mode = app.storage.general.get('mode', 'Tree')
+	import_btn = Button(None, 'upload_file', 'secondary', lambda: goto('/cluster/import/'), 'Import cluster')
+	if mode == 'Tree':
+		page('Clusters', hide_breadcrumbs=True, hide_menu_tree=True, buttons=[import_btn])
+		with ui.list().props('separator').classes('w-full'):
+			for cluster in Cluster.nodes.has(net=False).order_by('name'):
+				with ui.item(on_click=lambda c=cluster: goto(f'/cluster/{c.uid}/')):
+					with ui.item_section().props('avatar'):
+						ui.icon('account_tree')
+					with ui.item_section():
+						ui.item_label(cluster.name)
+	elif mode == 'Editor':
+		page('Select a cluster on the left...', buttons=[
+			Button(None, 'add', None, lambda: goto('/cluster/new/'), 'New cluster'),
+			import_btn
+		])
+		ui.label('Select an existing cluster on the left, or use the buttons on the left to either create a new one or import one.')
 
 
 def run():
@@ -45,10 +61,14 @@ def run():
 		config.DATABASE_URL += f'/{args.database}'
 
 	# reload default settings every time the server is restarted
-	app.storage.general['show_diagrams'] = True
-	app.storage.general['auto_compute'] = False
-	if not('reasoner' in app.storage.general.keys()):
-		app.storage.general['reasoner'] = 'BayesNetReasoner'
+	default_settings = {
+		'mode': 'Tree',
+		'show_diagrams': True,
+		'auto_compute': False,
+		'reasoner': 'BayesNetReasoner'
+	}
+	for setting, default in default_settings.items():
+		app.storage.general[setting] = app.storage.general.get(setting, default)
 
 	app.include_router(cluster_router)
 	app.include_router(function_router)

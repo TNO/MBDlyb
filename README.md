@@ -11,7 +11,7 @@ For more information and some high-level documentation, please visit [our websit
 
 # Installation & usage
 This section briefly describes how to install MBDlyb, how to set up the database ([Neo4j](https://neo4j.com/)) which is used to store the models, and how to start MBDlyb.
-More documentation is available [here](https://mbdlyb.esi.nl/userguide/).
+More documentation, as well as two **example projects**, is available [here](https://mbdlyb.esi.nl/userguide/).
 Pre-packaged _wheel_ files can be found on the [Releases page](https://github.com/TNO/MBDlyb/releases) on Github.
 
 ## Installation

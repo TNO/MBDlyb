@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-	Copyright (c) 2023 - 2025 TNO-ESI
+	Copyright (c) 2023 - 2026 TNO-ESI
 	All rights reserved.
 """
 
 from neomodel import db
-from nicegui import ui, APIRouter
+from nicegui import ui, APIRouter, app
 
 import mbdlyb.functional as fn
 from mbdlyb.functional.gdb import Cluster, Function, DirectObservable, DiagnosticTest
@@ -386,7 +386,7 @@ def requiredfor_relation_repair(function_id: str, depfunction_id: str):
 
 	function: Function = get_object_or_404(Function, uid=function_id)
 	depfunction: Function = get_object_or_404(Function, uid=depfunction_id)
-	relation: mbdlyb.RequiredForRelation = get_relation_or_404(function, depfunction, 'required_for')
+	relation: RequiredForRelation = get_relation_or_404(function, depfunction, 'required_for')
 	if None in (function, depfunction, relation):
 		return
 
@@ -491,4 +491,7 @@ def observes_relation_update(function_id: str, test_id: str):
 
 @router.page('/function/{function_id}/cpt/')
 def function_cpt(function_id: str):
-	node_cpt(Function, function_id, '/function/{}/')
+	mode = app.storage.general['mode']
+	editor_mode = mode == 'Editor'
+	node_cpt(Function, function_id, '/function/{}/' if editor_mode else lambda f: f'/cluster/{f.get_root().uid}/',
+			 hide_menu_tree=not editor_mode)

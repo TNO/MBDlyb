@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-	Copyright (c) 2023 - 2025 TNO-ESI
+	Copyright (c) 2023 - 2026 TNO-ESI
 	All rights reserved.
 """
 import re
@@ -9,6 +9,7 @@ from typing import Union, Optional
 
 from capellambse import MelodyModel
 from capellambse.metamodel import cs, fa
+from capellambse.model import ModelElement
 
 from neomodel import db
 
@@ -189,11 +190,13 @@ class CapellaToCluster:
 		if complete_composite:
 			return None
 
-		fault_rate = 0.01  # default
+		fault_rates = {'Broken': 0.01}  # default
 		if capella_hw.property_value_groups.get('MBDlyb.Hardware priors'):
-			fault_rate = capella_hw.property_value_groups['MBDlyb.Hardware priors']['Fault rate']
+			fault_rates = self._custom_fault_rates(capella_hw)
+			if not fault_rates:
+				fault_rates = {'Broken': capella_hw.property_value_groups['MBDlyb.Hardware priors']['Fault rate']}
 
-		hw = Hardware(name=self._format(capella_hw.name), fault_rates={'Broken': fault_rate}).save()
+		hw = Hardware(name=self._format(capella_hw.name), fault_rates=fault_rates).save()
 		hw.set_net(cluster)
 		self._add_node(capella_hw, hw)
 		if self._hw_is_inspectable(capella_hw):
@@ -205,6 +208,10 @@ class CapellaToCluster:
 	def _add_function(self, capella_fn: fa.Function) -> Function:
 		self._capella_fns[capella_fn.uuid] = capella_fn
 		fn = Function(name=self._format(capella_fn.name)).save()
+		custom_states = self._custom_states(capella_fn)
+		if custom_states:
+			fn.states = custom_states
+			fn.save()
 		self._add_node(capella_fn, fn)
 		if capella_fn.uuid in self._function_positions:
 			c, hw = self._function_positions[capella_fn.uuid]
@@ -213,7 +220,8 @@ class CapellaToCluster:
 				fn.realized_by.connect(hw)
 		return fn
 
-	def _add_specified_diagnostic_test(self, name: str, cost: float, cluster: Cluster = None) -> tuple[
+	@staticmethod
+	def _add_specified_diagnostic_test(name: str, cost: float, cluster: Cluster = None) -> tuple[
 		DiagnosticTest, DiagnosticTestResult]:
 		dt = DiagnosticTest(name=name, fixed_cost={'Time': cost}).save()
 		dtr = DiagnosticTestResult(name=name + '_Result').save()
@@ -322,13 +330,30 @@ class CapellaToCluster:
 
 	@staticmethod
 	def _fn_is_diagnostic_test(capella_fn: fa.Function) -> bool:
-		return bool(capella_fn.applied_property_value_groups) and \
+		return bool(capella_fn.property_value_groups.get('MBDlyb.Diagnostic test')) and \
 			capella_fn.property_value_groups['MBDlyb.Diagnostic test']['Diagnostic test']
 
 	@staticmethod
 	def _hw_is_inspectable(capella_hw: cs.Component) -> bool:
 		return bool(capella_hw.property_value_groups.get('MBDlyb.Inspections')) and \
 			capella_hw.property_value_groups['MBDlyb.Inspections']['Inspectable']
+
+	@staticmethod
+	def _custom_states(capella_element: ModelElement) -> list[str]:
+		if bool(capella_element.property_value_groups.get('MBDlyb.MultiState')) and bool(
+				capella_element.property_value_groups['MBDlyb.MultiState']['States']):
+			return [s.strip() for s in capella_element.property_value_groups['MBDlyb.MultiState']['States'].split(',')]
+		return []
+
+	@staticmethod
+	def _custom_fault_rates(capella_hw: cs.Component) -> dict:
+		if bool(capella_hw.property_value_groups.get('MBDlyb.Hardware priors')) and bool(
+				capella_hw.property_value_groups['MBDlyb.Hardware priors']['Fault rates']):
+			fault_pairs: list[tuple] = [tuple(_s.strip() for _s in s.strip().split(':')) for s in
+										capella_hw.property_value_groups['MBDlyb.Hardware priors']['Fault rates'].split(
+											',')]
+			return {f: float(fr) for f, fr in fault_pairs}
+		return dict()
 
 	@staticmethod
 	def _exch_is_required(capella_exch: fa.FunctionalExchange) -> bool:

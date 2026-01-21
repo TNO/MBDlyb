@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-	Copyright (c) 2023 - 2025 TNO-ESI
+	Copyright (c) 2023 - 2026 TNO-ESI
 	All rights reserved.
 """
 from __future__ import annotations  # PEP 563 - Postponed Evaluation of Annotations - https://peps.python.org/pep-0563/

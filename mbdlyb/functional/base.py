@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-	Copyright (c) 2023 - 2025 TNO-ESI
+	Copyright (c) 2023 - 2026 TNO-ESI
 	All rights reserved.
 """
 from typing import Union, Optional

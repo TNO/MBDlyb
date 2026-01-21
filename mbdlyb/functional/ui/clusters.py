@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-	Copyright (c) 2023 - 2025 TNO-ESI
+	Copyright (c) 2023 - 2026 TNO-ESI
 	All rights reserved.
 """
 import html
+import io
 import os
 import re
 import tempfile
@@ -11,18 +12,23 @@ import shutil
 from tempfile import TemporaryFile
 from pathlib import Path
 from typing import Optional, Callable, Union, Type
+from zipfile import ZipFile
+
+import pandas as pd
 from nicegui import app, ui, APIRouter, events, run
 from neomodel import db
 from multiprocessing import Manager, Queue
 
+from numpy.f2py.auxfuncs import isintent_c
+
 import mbdlyb.functional as fn
 from mbdlyb.functional.gdb import (MBDElement, FunctionalNode, Cluster, Function, DirectObservable, DiagnosticTest,
 								   DiagnosticTestResult, Hardware, ObservedError, update_fqn, update_name,
-								   RequiredForRelation)
-from mbdlyb.ui.helpers import goto, get_object_or_404
+								   RequiredForRelation, CLASS_ICONS, CPTEnabledNode)
+from mbdlyb.ui.helpers import goto, get_object_or_404, CPT
 
 from .base import Button, page, confirm, confirm_delete, TableColumn, TableMultiColumn, Table
-from .helpers import save_object, save_new_object
+from .helpers import save_object, save_new_object, build_tree
 from .validation import base_name_validation
 
 router = APIRouter(prefix='/cluster')
@@ -42,6 +48,35 @@ def download_bayesnet(cluster: Cluster):
 	with TemporaryFile(suffix='.dne') as temp_file:
 		f_cluster.save_bn(Path(temp_file.name), overwrite=True)
 		ui.download(Path(temp_file.name), f'{cluster.name}.dne')
+
+
+def download_cpt(node: CPTEnabledNode):
+	cpt, _ = CPT.from_dict(node, node.cpt)
+	xls_buffer = io.BytesIO()
+	with pd.ExcelWriter(xls_buffer, engine='xlsxwriter') as writer:
+		cpt.to_df().to_excel(writer, sheet_name='CPT')
+	ui.download.content(xls_buffer.getvalue(), f'{node.fqn}.xlsx', media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+
+def download_cpts(cluster: Cluster, only_required: bool = True):
+	node_cpts = collect_cpts(cluster, only_required)
+	zip_buffer = io.BytesIO()
+	with ZipFile(zip_buffer, mode='w') as zip_file:
+		for node, cpt in node_cpts.items():
+			with zip_file.open(f'{node.fqn}.xlsx', mode='w') as buffer:
+				with pd.ExcelWriter(buffer) as writer:
+					cpt.to_df().to_excel(writer, sheet_name='CPT')
+	ui.download.content(zip_buffer.getvalue(), f'{cluster.name}_cpts.zip', media_type='application/zip')
+
+
+def collect_cpts(cluster: Cluster, only_required: bool = True) -> dict[FunctionalNode, CPT]:
+	cpt_nodes: dict[FunctionalNode, CPT] = dict()
+	for element in cluster.elements.order_by('name'):
+		if isinstance(element, Cluster):
+			cpt_nodes.update(collect_cpts(element, only_required))
+		elif isinstance(element, CPTEnabledNode) and (not only_required or (element.has_cpt or element.requires_cpt)):
+			cpt_nodes[element], _ = CPT.from_dict(element, element.cpt)
+	return cpt_nodes
 
 
 def copy_cluster(obj) -> None:
@@ -419,24 +454,41 @@ def cluster_details(cluster_id: str):
 	cluster: Cluster = get_object_or_404(Cluster, uid=cluster_id)
 	if cluster is None:
 		return
+
+	mode = app.storage.general['mode']
+	if mode == 'Tree':
+		_cluster_tree(cluster)
+	elif mode == 'Editor':
+		_cluster_details(cluster)
+
+def _cluster_details(cluster: Cluster):
+	buttons = [[Button(None, 'checklist', 'secondary', lambda: goto(f'/cluster/{cluster.uid}/validator/'), 'Check model')]]
 	if cluster.at_root:
-		buttons = [[Button(None, 'play_circle', 'positive', lambda: goto(f'/cluster/{cluster.uid}/diagnoser/'), 'Diagnoser'),
-				   Button(None, 'design_services', 'positive', lambda: goto(f'/cluster/{cluster.uid}/design_for_diagnostics/'), 'Design for diagnostics')]]
-	else:
-		buttons = []
-	buttons.extend([
-			Button(None, 'checklist', 'secondary', lambda: goto(f'/cluster/{cluster.uid}/validator/'), 'Check model'), [
+		buttons[0] = [Button(None, 'play_circle', 'positive', lambda: goto(f'/cluster/{cluster.uid}/diagnoser/'), 'Diagnoser'),
+				   Button(None, 'design_services', 'positive', lambda: goto(f'/cluster/{cluster.uid}/design_for_diagnostics/'), 'Design for diagnostics')] + buttons[0]
+	buttons.extend([[
 			Button(None, 'account_tree', 'secondary', lambda: download_graph(cluster), 'Download graph'),
 			Button(None, 'developer_board', 'secondary', lambda: download_bayesnet(cluster), 'Download Bayesnet')
-		],
-		Button(None, 'table_view', 'secondary', lambda: goto(f'/cluster/{cluster.uid}/requiredfor/'), 'View table'),
-		Button(None, 'upload_file', 'secondary', lambda: goto(f'/cluster/{cluster.uid}/import/'), 'Import cluster'),
-		Button(None, 'edit', None, lambda: goto(f'/cluster/{cluster.uid}/update/'), 'Edit cluster'),
-		Button(None, 'content_copy', None, lambda: copy_cluster(cluster), 'Copy cluster')])
+		], [
+			Button(None, 'upload_file', 'secondary', lambda: goto(f'/cluster/{cluster.uid}/import/'), 'Import cluster'),
+			Button(None, 'table_view', 'secondary', lambda: download_cpts(cluster, False), 'Download all CPTs'),
+			Button(None, 'backup_table', 'secondary', lambda: download_cpts(cluster),
+				   'Download required and existing CPTs'),
+			Button(None, 'add_to_photos', 'secondary', lambda: goto(f'/cluster/{cluster.uid}/import_cpt/'),
+				   'Import CPT')
+		]
+	])
+	transfer_buttons = [Button(None, 'content_copy', 'secondary', lambda: copy_cluster(cluster), 'Copy cluster')]
 	if not cluster.at_root:
-		buttons.append(Button(None, 'trending_flat', None, lambda: move_cluster(cluster), 'Move cluster'))
-	buttons.append(Button(None, 'delete', 'negative',
-			   lambda: confirm_delete(cluster, '/' if cluster.at_root else f'/cluster/{cluster.get_net().uid}/'), 'Delete cluster'))
+		transfer_buttons.append(Button(None, 'trending_flat', 'secondary', lambda: move_cluster(cluster), 'Move cluster'))
+	buttons.append(transfer_buttons)
+	buttons.append([
+		Button(None, 'table_view', 'secondary', lambda: goto(f'/cluster/{cluster.uid}/requiredfor/'), 'View table'),
+		Button(None, 'edit', None, lambda: goto(f'/cluster/{cluster.uid}/update/'), 'Edit cluster'),
+		Button(None, 'delete', 'negative',
+			   lambda: confirm_delete(cluster, '/' if cluster.at_root else f'/cluster/{cluster.get_net().uid}/'),
+			   'Delete cluster')
+	])
 	page(f'Cluster {cluster.name}', cluster, buttons)
 	with ui.column().classes('w-full'):
 		with ui.card().classes('w-full') as card:
@@ -535,6 +587,81 @@ def cluster_details(cluster_id: str):
 					  Button(icon='delete', color='negative', tooltip='Delete {}',
 							 handler=lambda x: confirm_delete(x, f'/cluster/{cluster.uid}/'))
 				  ]).show()
+
+
+def _cluster_tree(cluster: Cluster):
+	buttons = [
+		[Button(None, 'checklist', 'secondary', lambda: goto(f'/cluster/{cluster.uid}/validator/'), 'Check model')]]
+	if cluster.at_root:
+		buttons[0] = [Button(None, 'play_circle', 'positive', lambda: goto(f'/cluster/{cluster.uid}/diagnoser/'),
+							 'Diagnoser'),
+					  Button(None, 'design_services', 'positive',
+							 lambda: goto(f'/cluster/{cluster.uid}/design_for_diagnostics/'),
+							 'Design for diagnostics')] + buttons[0]
+	buttons.extend([[
+			Button(None, 'account_tree', 'secondary', lambda: download_graph(cluster), 'Download graph'),
+			Button(None, 'developer_board', 'secondary', lambda: download_bayesnet(cluster), 'Download Bayesnet')
+		], [
+			Button(None, 'table_view', 'secondary', lambda: download_cpts(cluster, False), 'Download all CPTs'),
+			Button(None, 'backup_table', 'secondary', lambda: download_cpts(cluster), 'Download required and existing CPTs'),
+			Button(None, 'add_to_photos', 'secondary', lambda: goto(f'/cluster/{cluster.uid}/import_cpt/'), 'Import CPT')
+		],
+			Button(None, 'delete', 'negative', lambda: confirm_delete(cluster, '/'), 'Delete cluster')
+		])
+	page(f'Cluster {cluster.name}', cluster, buttons, header_text='Model Browser', hide_menu_tree=True, hide_breadcrumbs=True)
+	ui.separator()
+	with ui.grid(columns='3fr 2fr').classes('w-full divide-x gap-0'):
+		with ui.row().classes('w-full pr-4'):
+			_build_tree_row(cluster, True)
+		with ui.row().classes('w-full pl-4'):
+			show_node_details()
+
+
+_ICON_OPEN = 'keyboard_arrow_down'
+_ICON_CLOSED = 'chevron_right'
+
+def _build_tree_row(node: FunctionalNode | Cluster, visible: bool = False):
+	is_cluster = isinstance(node, Cluster)
+	with ui.row().classes('w-full gap-0 divide-y'):
+		with ui.row().classes('w-full items-center py-2'):
+			if is_cluster:
+				icon = ui.icon(_ICON_OPEN if visible else _ICON_CLOSED).classes('cursor-pointer').on('click', lambda
+					e: e.sender.set_name(_ICON_OPEN if e.sender.name == _ICON_CLOSED else _ICON_CLOSED))
+			else:
+				ui.icon(CLASS_ICONS.get(node.__class__, 'question_mark'), color=node.color).tooltip(node.__class__.__name__)
+			ui.button(node.name, color='standard', on_click=lambda n=node: show_node_details.refresh(n)).props('flat dense sm no-caps').classes('text-weight-medium' if is_cluster else 'text-weight-regular')
+			ui.space()
+			if not is_cluster and node.requires_cpt:
+				ui.icon('grid_on', color='positive' if node.has_cpt else 'negative').classes('cursor-pointer').on('click', lambda n=node: show_node_details.refresh(n))
+		if is_cluster:
+			with ui.row().classes('w-full ml-4 divide-y gap-0') as content_block:
+				for child in list(node.subnets.order_by('name')) + list(node.mbdnodes.order_by('name')):
+					_build_tree_row(child)
+				content_block.bind_visibility_from(icon, 'name', backward=lambda n: n == _ICON_OPEN)
+
+@ui.refreshable
+def show_node_details(node: Optional[FunctionalNode | Cluster] = None):
+	if node is None:
+		ui.label('Select a node to view its details.')
+		return
+	with ui.row().classes('w-full justify-between items-start'):
+		with ui.column():
+			color = node.color
+			if color == '#000000':
+				color = '#CCCCCC'
+			ui.chip(node.__class__.__name__, icon=CLASS_ICONS.get(node.__class__, 'question_mark'), color=color)
+			ui.label(node.name).classes('text-h5')
+			ui.label(node.fqn).classes('text-grey')
+			if isinstance(node, FunctionalNode) and node.states:
+				ui.label(f'States: {", ".join((f"{k} ({v})" for k, v in node.priors.items()) if isinstance(node, Hardware) else node.states)}')
+		with ui.column():
+			if isinstance(node, CPTEnabledNode):
+				with ui.button_group().props('flat'):
+					ui.button(icon='table_view', color='secondary', on_click=lambda: download_cpt(node)).tooltip('Download CPT').props('outline')
+					with ui.button(icon='grid_on', on_click=lambda n=node: goto(n.cpt_url)).tooltip('Modify CPT').props('outline'):
+						if node.requires_cpt:
+							ui.badge('!', color='positive' if node.has_cpt else 'negative').props('floating')
+
 
 @ui.refreshable
 def draw_mermaid_diagram(cluster: Cluster, save_button: ui.menu_item):
@@ -638,21 +765,6 @@ class ClusterImportProps:
 		self.files: list[Path] = []
 
 
-# async def handle_upload(e: events.MultiUploadEventArguments, props: ClusterImportProps, suffix: str):
-# 	if props.parent is not None:
-# 		if props.parent.has_node(props.main_cluster_name):
-# 			ui.notify('Name already exists!')
-# 			return
-# 	else:
-# 		if props.main_cluster_name in {c.name for c in Cluster.nodes.has(net=False)}:
-# 			ui.notify('Name already exists!')
-# 			return
-# 	for f in e.files:
-# 		with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tf:
-# 			tf.write(await f.read())
-# 			props.files.append(Path(tf.name))
-
-
 async def handle_capella_upload(e: events.MultiUploadEventArguments, props: ClusterImportProps):
 	if props.parent is not None:
 		if props.parent.has_node(props.main_cluster_name):
@@ -677,14 +789,6 @@ async def handle_capella_upload(e: events.MultiUploadEventArguments, props: Clus
 
 
 def cluster_import_form(props: ClusterImportProps):
-	# ui.input('Main cluster name', validation=base_name_validation(props.parent, None)) \
-	# 	.bind_value(props,'main_cluster_name').props('hide-bottom-space')
-	# ui.upload(label='Dependency table', multiple=True, on_multi_upload=lambda e: handle_upload(e, props, '.xlsx'),
-	# 		  auto_upload=True).props('accept=.xlsx')
-	# ui.upload(label='Connections', multiple=True, on_multi_upload=lambda e: handle_upload(e, props, '.json'),
-	# 		  auto_upload=True).props('accept=.json')
-
-	# ui.label("Capella import").style('font-size: 140%')
 	ui.upload(label='Capella', multiple=True, on_multi_upload=lambda e: handle_capella_upload(e, props), auto_upload=True)
 	ui.select(["logical", "physical"], label="Capella architecture").bind_value(props, 'capella_architecture').classes('w-60')
 	with ui.row():
@@ -703,24 +807,20 @@ def cluster_import_form(props: ClusterImportProps):
 def cluster_import(parent_cluster: Optional[Cluster] = None):
 	async def _save(props: ClusterImportProps, queue: Queue, progress_bar: ui.linear_progress, timer: ui.timer):
 		ui.notify('Importing model, please wait. This could take a long time, depending on the size of your model.')
-		if props.capella_architecture:
-			progress_bar.visible = True
-			timer.active = True
-			c: Cluster = await run.io_bound(
-				Cluster.load_capella,
-				props.capella_architecture,
-				props.default_fn_tests,
-				props.default_hl_fn_tests,
-				props.default_hw_tests,
-				props.default_ll_hw_tests,
-				props.import_opms,
-				*props.files,
-				queue=queue)
-			timer.active = False
-			progress_bar.visible = False
-		else:
-			await run.io_bound(Cluster.load_xls, props.main_cluster_name, *props.files)
-			c: Cluster = Cluster.nodes.has(net=False).get(name=props.main_cluster_name)
+		progress_bar.visible = True
+		timer.active = True
+		c: Cluster = await run.io_bound(
+			Cluster.load_capella,
+			props.capella_architecture,
+			props.default_fn_tests,
+			props.default_hl_fn_tests,
+			props.default_hw_tests,
+			props.default_ll_hw_tests,
+			props.import_opms,
+			*props.files,
+			queue=queue)
+		timer.active = False
+		progress_bar.visible = False
 		if props.parent is not None:
 			c.net.connect(props.parent)
 		for f in props.files:
@@ -737,11 +837,132 @@ def cluster_import(parent_cluster: Optional[Cluster] = None):
 					 callback=lambda: progress_bar.set_value(queue.get() if not queue.empty() else progress_bar.value),
 					 active=False)
 
+	mode = app.storage.general['mode']
+	hide_navigation = mode == 'Tree'
 	title = 'Capella import'
 	if parent_cluster is not None:
 		title += f' into {parent_cluster.fqn}'
-	page(title, parent_cluster, [
+	save_btn = page(title, parent_cluster, [
 		Button('Discard', None, 'warning', lambda: goto('/' if parent_cluster is None else f'/cluster/{parent_cluster.uid}/')),
 		Button('Save', None, 'primary', lambda: _save(props, queue, progress_bar, timer))
-	])
+	], hide_menu_tree=hide_navigation, hide_breadcrumbs=hide_navigation)[1]
+	save_btn.bind_enabled_from(locals(), 'props', lambda p: bool(p.files) and bool(p.capella_architecture))
 	cluster_import_form(props)
+
+
+class CPTImportProps:
+	def __init__(self, cluster: Cluster, files: list[Path] = None):
+		self.cluster: Cluster = cluster
+		self.files: list[Path] = []
+		self.nodes: dict[CPTEnabledNode, list[str]] = dict()
+		self.cpts: dict[str, tuple[CPTEnabledNode, CPT]] = dict()
+		self.enabled: dict[str, bool] = dict()
+		self.validation_msg: dict[CPTEnabledNode, str] = dict()
+
+	def add_cpt(self, origin: str, node: CPTEnabledNode, cpt: CPT):
+		if node not in self.validation_msg:
+			validation = node.validate_cpt()
+			self.validation_msg[node] = validation[0].message if validation else None
+
+		if node in self.nodes:
+			self.nodes[node].append(origin)
+			self.enabled[origin] = False
+		else:
+			self.nodes[node] = [origin]
+			self.enabled[origin] = not (node.has_cpt and self.validation_msg[node] is None)
+		self.cpts[origin] = (node, cpt)
+
+
+async def handle_cpt_upload(e: events.MultiUploadEventArguments, props: CPTImportProps):
+	for f in e.files:
+		if f.content_type == 'application/x-zip-compressed':
+			await handle_cpt_zip_file(f, props)
+		elif f.content_type == 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+			await handle_cpt_xls_file(f, props)
+		else:
+			ui.notify('Invalid file type provided!', color='negative')
+	cpt_import_table.refresh()
+
+async def handle_cpt_zip_file(f: ui.upload.FileUpload, props: CPTImportProps):
+	with ZipFile(io.BytesIO(await f.read())) as zip_file:
+		for excel_file in zip_file.filelist:
+			handle_cpt_file_contents(excel_file.filename, io.BytesIO(zip_file.read(excel_file.filename)), props, origin=f'{f.name}/{excel_file.filename}')
+
+async def handle_cpt_xls_file(f: ui.upload.FileUpload, props: CPTImportProps):
+	handle_cpt_file_contents(f.name, io.BytesIO(await f.read()), props)
+
+def handle_cpt_file_contents(filename: str, contents: io.BytesIO, props: CPTImportProps, origin: str = None):
+	f_fqn = filename.removesuffix('.xlsx')
+	try:
+		node: CPTEnabledNode = props.cluster.get_node(f_fqn)
+	except KeyError:
+		ui.notify(f'Node {f_fqn} not found in network!', color='negative')
+		return
+	df = pd.read_excel(contents, sheet_name='CPT', index_col=list(range(len(node.parents()))))
+	cpt, msg = CPT.from_df(node, df)
+	if msg:
+		ui.notify(f'{node.fqn}: {msg}', color='warning')
+		return
+	props.add_cpt(origin or filename, node, cpt)
+
+def cpt_import_form(props: CPTImportProps):
+	ui.upload(label='CPTs', multiple=True, on_multi_upload=lambda e: handle_cpt_upload(e, props),
+			  auto_upload=True)
+	cpt_import_table(props)
+
+@ui.refreshable
+def cpt_import_table(props: CPTImportProps):
+	if not props.cpts:
+		ui.label('No CPTs have been uploaded yet.')
+		return
+
+	with ui.list().props('separator'):
+		ui.item_label('CPTs to import').props('header').classes('text-bold')
+		for node, origins in props.nodes.items():
+			for origin in origins:
+				with ui.item():
+					with ui.checkbox(node.fqn).bind_value(props.enabled, origin) as cbx:
+						_node_cpt_badge(node, props)
+						if len(origins) > 1:
+							ui.label(origin.removesuffix(f'/{node.fqn}.xlsx')).classes('inline ml-2 text-grey')
+							cbx.on_value_change(lambda e, n=node, o=origin, p=props: _change_origin(e, n, o, p))
+
+def _node_cpt_badge(node: CPTEnabledNode, props: CPTImportProps):
+	if props.validation_msg.get(node, None):
+		ui.badge('!', color='negative').classes('ml-2').tooltip(props.validation_msg[node])
+	elif node.requires_cpt or node.has_cpt:
+		ui.badge('!', color='warning').classes('ml-2').tooltip(
+			f'A valid CPT has already been specified for {node.fqn}. It will be overwritten when selected.')
+
+def _change_origin(e, node: CPTEnabledNode, origin: str, props: CPTImportProps):
+	if e.value:
+		for o in props.nodes[node]:
+			if o is not origin:
+				props.enabled[o] = False
+
+
+@router.page('/{cluster_id}/import_cpt/')
+def cpt_import(cluster_id: str):
+	def _save(props: CPTImportProps, redirect_url: str):
+		for origin, enabled in props.enabled.items():
+			if not enabled:
+				continue
+			node, cpt = props.cpts[origin]
+			node.cpt = cpt.to_dict()
+			node.save()
+		goto(redirect_url)
+
+	cluster = get_object_or_404(Cluster, uid=cluster_id)
+	if cluster is None:
+		return
+	redirect_page = f'/cluster/{cluster_id}/'
+	mode = app.storage.general['mode']
+	hide_navigation = mode == 'Tree'
+
+	props = CPTImportProps(cluster)
+	save_btn = page('CPT import', cluster, [
+		Button('Discard', None, 'warning', lambda: goto(redirect_page)),
+		Button('Save', None, 'primary', lambda: _save(props, redirect_page))
+	], hide_menu_tree=hide_navigation, hide_breadcrumbs=hide_navigation)[1]
+	save_btn.bind_enabled_from(locals(), 'props', lambda p: any(p.enabled.values()))
+	cpt_import_form(props)

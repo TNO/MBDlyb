@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-	Copyright (c) 2023 - 2025 TNO-ESI
+	Copyright (c) 2023 - 2026 TNO-ESI
 	All rights reserved.
 """
 from typing import Callable, Union
 
 from nicegui import ui
 
-from mbdlyb.gdb import MBDElement
+from mbdlyb.gdb import MBDElement, MBDNet
 from mbdlyb.ui.helpers import Relation, get_object_or_404, CPT
-from mbdlyb.functional.gdb import FunctionalNode, Cluster, update_fqn
+from mbdlyb.functional.gdb import FunctionalNode, Cluster, update_fqn, CLASS_ICONS
 
 from .base import page, Button, confirm
 
@@ -121,7 +121,7 @@ class StateTable:
 @ui.refreshable
 def state_table(state_table: StateTable, default_states: list[str]):
 	ui.label(f'Leave empty for default states ({"/".join(default_states)})!')
-	with ui.grid(columns=2).classes('vertical-bottom'):
+	with ui.grid(columns=2).classes('vertial-bottom'):
 		for col in ('Custom state',):
 			ui.label(col).classes('font-bold')
 		ui.icon('add', color='primary').on('click', lambda: state_table.add_state()).classes('cursor-pointer')
@@ -131,28 +131,29 @@ def state_table(state_table: StateTable, default_states: list[str]):
 				'self-end cursor-pointer')
 
 
-def node_cpt(klass: type[FunctionalNode], node_id: str, url: str):
-	def _save(node: type[FunctionalNode], cpt: CPT):
+def node_cpt(klass: type[FunctionalNode], node_id: str, url: str | Callable[[FunctionalNode], str], hide_menu_tree: bool = False):
+	def _save(node: type[FunctionalNode], cpt: CPT, _redirect_url: str):
 		node.cpt = cpt.normalize().to_dict()
-		save_object(node, url.format(node_id))
+		save_object(node, _redirect_url)
 
-	def _drop(node: type[FunctionalNode], node_id: str, url: str):
+	def _drop(node: type[FunctionalNode], _redirect_url: str):
 		node.cpt = dict()
-		save_object(node, url.format(node_id))
+		save_object(node, _redirect_url)
 
 	node = get_object_or_404(klass, uid=node_id)
 	if node is None:
 		return
+	redirect_url = url.format(node_id) if isinstance(url, str) else url(node)
 
 	cpt, message = CPT.from_dict(node, node.cpt)
-	buttons = [Button('Discard', None, 'warning', lambda: goto(url.format(node_id))),
-			   Button('Save', 'save', None, lambda: _save(node, cpt))]
+	buttons = [Button('Discard', None, 'warning', lambda: goto(redirect_url)),
+			   Button('Save', 'save', None, lambda: _save(node, cpt, redirect_url))]
 	if not node.requires_cpt:
 		buttons = [Button('Drop', None, 'negative', lambda: confirm('Drop CPT',
 																	'Are you sure to drop the CPT? This will revert the behavior of this node to its default behavior?',
-																	'Drop CPT', lambda: _drop(node, node_id, url),
+																	'Drop CPT', lambda: _drop(node, redirect_url),
 																	'negative'))] + buttons
-	page(f'CPT of {node}', node.get_net(), buttons)
+	page(f'CPT of {node}', node.get_net(), buttons, hide_menu_tree=hide_menu_tree)
 	if message:
 		ui.label(f'{message} The CPT has been regenerated.').classes('text-warning')
 	with ui.grid(columns=len(cpt.parents) + len(node.states)).classes('gap-0'):
@@ -172,3 +173,18 @@ def node_cpt(klass: type[FunctionalNode], node_id: str, url: str):
 				ui.label(state_value).classes('border p-1')
 			for c in line.cells:
 				ui.number(min=0., max=1., step=.01, precision=5).bind_value(c, 'probability').props('borderless dense').classes('border p-1')
+
+
+def build_tree(node: FunctionalNode | Cluster) -> dict:
+	d = {'id': node.uid,
+		 'fqn': node.fqn,
+		 'name': node.name,
+		 'type': node.__class__.__name__,
+		 'icon': CLASS_ICONS.get(node.__class__, 'question_mark'),
+		 'requires_cpt': node.requires_cpt if isinstance(node, FunctionalNode) else False,
+		 'has_cpt': node.has_cpt if isinstance(node, FunctionalNode) else False
+	 }
+	if isinstance(node, MBDNet):
+		d['children'] = [build_tree(c) for c in
+						 list(node.subnets.order_by('name')) + list(node.mbdnodes.order_by('name'))]
+	return d

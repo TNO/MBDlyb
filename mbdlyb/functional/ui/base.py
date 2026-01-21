@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-	Copyright (c) 2023 - 2025 TNO-ESI
+	Copyright (c) 2023 - 2026 TNO-ESI
 	All rights reserved.
 """
 import asyncio
@@ -31,12 +31,13 @@ class Button:
 	handler: Optional[str | Callable[[], any] | Callable[[MBDElement], any]] = None
 	tooltip: Optional[str | Callable[[MBDElement], str]] = None
 
-	def show(self, obj: MBDElement = None, hide_label=False, btn_props: str = None, tooltip_classes: str = None):
+	def show(self, obj: MBDElement = None, hide_label=False, btn_props: str = None, tooltip_classes: str = None) -> ui.button:
 		with ui.button(text=None if hide_label else self._eval(self.label, obj), icon=self._eval(self.icon, obj),
 					   color=self._eval(self.color, obj), on_click=self._eval_handler(self.handler, obj)).props(
-				btn_props or ''):
+				btn_props or '') as btn:
 			if self.tooltip:
 				ui.tooltip(self._eval(self.tooltip)).classes(tooltip_classes or '')
+			return btn
 
 	def show_icon(self, obj: MBDElement = None, btn_props: str = None, tooltip_classes: str = None):
 		with ui.icon(self._eval(self.icon, obj), color=self._eval(self.color, obj)).on('click', self._eval_handler(
@@ -87,16 +88,18 @@ def build_menu_tree(parent: Cluster = None):
 	]
 
 
-def _buttons(buttons: list[list | Button]):
+def _buttons(buttons: list[list | Button]) -> list[list | ui.button]:
+	ui_buttons: list[list | ui.button] = []
 	for button in buttons:
 		if isinstance(button, Button):
-			button.show(btn_props='outline', tooltip_classes='text-xs')
-		elif isinstance(button, list) and len(button) >= 2:
-			with ui.button_group():
-				_buttons(button)
+			ui_buttons.append(button.show(btn_props='outline', tooltip_classes='text-xs'))
+		elif isinstance(button, list):
+			with ui.button_group().props('flat'):
+				ui_buttons.append(_buttons(button))
 		else:
 			import warnings
 			warnings.warn('Could not add buttons to page.')
+	return ui_buttons
 
 
 def _settings(dialog: ui.dialog):
@@ -113,12 +116,13 @@ def _settings(dialog: ui.dialog):
 				  label='Reasoner').bind_value(app.storage.general, 'reasoner')
 
 
-def header(text: str, url: str = '/'):
+def header(text: str, url: str = '/', cluster: Optional[Cluster] = None):
 	ui.page_title(text)
 	with ui.header(elevated=True).style('background-color: #3874c8'):
 		with ui.link(target=url).classes(remove='nicegui-link'):
 			ui.label(text).classes('text-h4')
 		ui.space()
+		ui.toggle(['Tree', 'Editor']).bind_value(app.storage.general, 'mode').on_value_change(lambda c=cluster: goto('/' if cluster is None else f'/cluster/{cluster.get_root().uid}/'))
 		dialog = ui.dialog()
 		_settings(dialog)
 		ui.icon('settings').classes('text-h4').on('click', dialog.open)
@@ -130,19 +134,21 @@ def footer():
 			'This prototype tool has been developed by TNO-ESI. All rights reserved.').classes('fit text-right')
 
 
-def page(title: str = None, cluster: Cluster = None, buttons=None):
+def page(title: str = None, cluster: Cluster = None, buttons=None, header_text: str = None, hide_menu_tree: bool = False, hide_breadcrumbs: bool = False) -> list[list | ui.button]:
 	def _cluster_trace(c: Cluster) -> list[Cluster]:
 		return (_cluster_trace(c.get_net()) if not c.at_root else []) + [c]
 
-	cluster_trace = None if cluster is None else _cluster_trace(cluster)
+	if not (hide_menu_tree and hide_breadcrumbs):
+		cluster_trace = None if cluster is None else _cluster_trace(cluster)
 
-	header('Model Editor')
-	with ui.left_drawer(bottom_corner=True).style('background-color: #d7e3f4'):
-		menu = ui.tree(build_menu_tree(), on_select=lambda c_id: goto(f'/cluster/{c_id.value}'))
-		if cluster_trace is not None:
-			menu.expand([c.uid for c in cluster_trace])
+	header(header_text or 'Model Editor', cluster=cluster)
+	if not hide_menu_tree:
+		with ui.left_drawer(bottom_corner=True).style('background-color: #d7e3f4'):
+			menu = ui.tree(build_menu_tree(), on_select=lambda c_id: goto(f'/cluster/{c_id.value}'))
+			if cluster_trace is not None:
+				menu.expand([c.uid for c in cluster_trace])
 	footer()
-	if cluster_trace:
+	if not hide_breadcrumbs and cluster_trace:
 		with ui.row():
 			for c in cluster_trace:
 				ui.link(c.name, target=f'/cluster/{c.uid}/')
@@ -152,7 +158,8 @@ def page(title: str = None, cluster: Cluster = None, buttons=None):
 			ui.label(title).classes('text-h5')
 			if buttons:
 				ui.space()
-				_buttons(buttons)
+				return _buttons(buttons)
+	return []
 
 
 @dataclass

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-	Copyright (c) 2023 - 2025 TNO-ESI
+	Copyright (c) 2023 - 2026 TNO-ESI
 	All rights reserved.
 """
 import io
@@ -158,6 +158,7 @@ class UIDiagnoserData:
 
 @router.page('/diagnoser/')
 def diagnoser_main(cluster_id: str):
+	editor_url = f'/cluster/{cluster_id}/'
 	auto_compute = app.storage.general.get('auto_compute', False)
 	data: UIDiagnoserData = UIDiagnoserData(cluster_id, auto_compute)
 
@@ -179,7 +180,7 @@ def diagnoser_main(cluster_id: str):
 																						   'Reset', (data.reset,
 																									 (compute_button,
 																									  e)), 'negative'))
-		ui.button('Editor', icon='home', color='primary').on_click(lambda: goto(f'/cluster/{cluster_id}'))
+		ui.button(app.storage.general['mode'], icon='home', color='primary').on_click(lambda: goto(editor_url))
 
 	box_classes = 'p-2 border border-gray-300 rounded-borders h-full'
 	with ui.grid(columns='1fr 1fr').classes('fit items-stretch gap-1'):

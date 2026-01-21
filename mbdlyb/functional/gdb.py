@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-	Copyright (c) 2023 - 2025 TNO-ESI
+	Copyright (c) 2023 - 2026 TNO-ESI
 	All rights reserved.
 """
 import json
@@ -19,7 +19,7 @@ import mbdlyb.functional as fn
 from mbdlyb import longest_common_fqn
 from mbdlyb.operating_mode import OpmLogic, OpmSet, OpmVariable
 from mbdlyb.gdb import MBDRelation, MBDNode, LBL_PARTOF, PartOfRelation, MBDNet, MBDElement
-from mbdlyb.functional.ui.messages import Error, Warning, ValidationMessage
+from mbdlyb.ui.messages import Error, Warning, ValidationMessage
 
 LBL_SUBFUNCTION = 'SUBFUNCTION_OF'
 LBL_REQUIRED = 'REQUIRED_FOR'
@@ -142,6 +142,7 @@ class ReportsErrorRelation(FunctionalRelation):
 class FunctionalNode(MBDNode):
 	_DEFAULT_STATES = []
 	_managed_relations: tuple[str] = ()
+	_COLOR = '#000000'
 	RELATION_ATTRIBUTES: list[tuple[str]] = []
 
 	net = RelationshipTo('mbdlyb.functional.gdb.Cluster', LBL_PARTOF, model=PartOfRelation, cardinality=ZeroOrOne)
@@ -153,6 +154,10 @@ class FunctionalNode(MBDNode):
 	@property
 	def requires_cpt(self) -> bool:
 		return False
+
+	@property
+	def color(self) -> str:
+		return self._COLOR
 
 	def validate(self) -> list[ValidationMessage]:
 		messages: list[ValidationMessage] = []
@@ -174,7 +179,10 @@ class CPTEnabledNode(FunctionalNode):
 		raise NotImplementedError
 
 	def validate(self) -> list[ValidationMessage]:
-		messages = super().validate()
+		return super().validate() + self.validate_cpt()
+
+	def validate_cpt(self):
+		messages: list[ValidationMessage] = []
 		if self.requires_cpt or self.cpt:
 			expected_cpt_lines = prod(len(p.states) for p in self.parents())
 			expected_cpt_line_length = len(self.states)
@@ -187,6 +195,8 @@ class CPTEnabledNode(FunctionalNode):
 
 
 class OperatingMode(FunctionalNode):
+	_COLOR = fn.OperatingMode.get_color()
+
 	operating_modes = ArrayProperty(StringProperty(), required=True)
 
 	def on_delete(self):
@@ -213,6 +223,7 @@ class Observed(FunctionalNode):
 
 
 class Function(CPTEnabledNode, Observed):
+	_COLOR = fn.Function.get_color()
 	_DEFAULT_STATES = fn.Function.DEFAULT_STATES
 	_managed_relations = ('subfunctions', 'required_for')
 	RELATION_ATTRIBUTES = Observed.RELATION_ATTRIBUTES + [
@@ -241,7 +252,7 @@ class Function(CPTEnabledNode, Observed):
 			p.has_custom_states for p in self.affected_by) or any(p.has_custom_states for p in self.subfunctions)
 
 	def parents(self) -> list['MBDNode']:
-		return list(self.subfunctions) + list(self.realized_by) + list(self.requires) + list(self.affected_by)
+		return list(self.subfunctions.order_by('fqn')) + list(self.realized_by.order_by('fqn')) + list(self.requires.order_by('fqn')) + list(self.affected_by.order_by('fqn'))
 
 	@property
 	def cpt_url(self) -> str:
@@ -249,6 +260,7 @@ class Function(CPTEnabledNode, Observed):
 
 
 class Hardware(Observed):
+	_COLOR = fn.Hardware.get_color()
 	_DEFAULT_STATES = fn.Hardware.DEFAULT_STATES
 	_managed_relations = ('realizes', 'affects')
 	BASE_PRIOR = {'Broken': 0.01}
@@ -263,6 +275,10 @@ class Hardware(Observed):
 	@property
 	def states(self) -> list[str]:
 		return self._DEFAULT_STATES + list(self.fault_rates.keys())
+
+	@property
+	def priors(self) -> dict[str, float]:
+		return {**{self._DEFAULT_STATES[0]: 1. - sum(self.fault_rates.values())}, **self.fault_rates}
 
 
 class ObservableNode(CPTEnabledNode):
@@ -291,6 +307,7 @@ class ObservableNode(CPTEnabledNode):
 
 
 class DirectObservable(ObservableNode):
+	_COLOR = fn.DirectObservable.get_color()
 	_DEFAULT_STATES = fn.DirectObservable.DEFAULT_STATES
 	RELATION_ATTRIBUTES = ObservableNode.RELATION_ATTRIBUTES + [('observed_functions', 'observed_by'),
 																('observed_hardware', 'observed_by')]
@@ -302,7 +319,7 @@ class DirectObservable(ObservableNode):
 	fn_rate = FloatProperty(default=.01)
 
 	def get_observed_nodes(self) -> list[FunctionalNode]:
-		return self.observed_hardware.all() + self.observed_functions.all()
+		return list(self.observed_hardware.order_by('fqn')) + list(self.observed_functions.order_by('fqn'))
 
 	@property
 	def cpt_url(self) -> str:
@@ -310,6 +327,7 @@ class DirectObservable(ObservableNode):
 
 
 class ObservedError(ObservableNode):
+	_COLOR = fn.ObservedError.get_color()
 	_DEFAULT_STATES = fn.ObservedError.DEFAULT_STATES
 	RELATION_ATTRIBUTES = ObservableNode.RELATION_ATTRIBUTES + [('observed_function', 'reporting_function')]
 
@@ -321,10 +339,11 @@ class ObservedError(ObservableNode):
 	error_code = StringProperty(required=True)
 
 	def get_observed_nodes(self) -> list[FunctionalNode]:
-		return self.observed_function.all()
+		return self.observed_function.order_by('fqn')
 
 
 class DiagnosticTest(FunctionalNode):
+	_COLOR = fn.DiagnosticTest.get_color()
 	RELATION_ATTRIBUTES = ObservableNode.RELATION_ATTRIBUTES + [('test_results', 'results_from')]
 
 	test_results = RelationshipTo('mbdlyb.functional.gdb.DiagnosticTestResult', LBL_RESULTS_IN, model=ResultsInRelation)
@@ -345,6 +364,7 @@ class DiagnosticTest(FunctionalNode):
 
 
 class DiagnosticTestResult(ObservableNode):
+	_COLOR = fn.DiagnosticTestResult.get_color()
 	_DEFAULT_STATES = fn.DiagnosticTestResult.DEFAULT_STATES
 	RELATION_ATTRIBUTES = ObservableNode.RELATION_ATTRIBUTES + [('results_from', 'results_from'),
 																('indicated_functions', 'indicated_by'),
@@ -357,7 +377,7 @@ class DiagnosticTestResult(ObservableNode):
 	fn_rate = FloatProperty(default=.001)
 
 	def get_observed_nodes(self) -> list[FunctionalNode]:
-		return self.indicated_hardware.all() + self.indicated_functions.all()
+		return list(self.indicated_hardware.order_by('fqn')) + list(self.indicated_functions.order_by('fqn'))
 
 	@property
 	def cpt_url(self) -> str:
@@ -369,6 +389,7 @@ class DiagnosticTestResult(ObservableNode):
 
 
 class Cluster(MBDNet):
+	_COLOR = '#000000'
 	_managed_relations: tuple[str] = ('subnets', 'functions', 'hardware', 'observables', 'tests')
 	_RELATION_ATTRS: dict[Type[MBDNode], dict[Type[MBDNode], str]] = {
 		Hardware: {
@@ -424,6 +445,10 @@ class Cluster(MBDNet):
 		for e in self.elements.all():
 			e.delete()
 		super().delete()
+
+	@property
+	def color(self) -> str:
+		return self._COLOR
 
 	@property
 	def is_flat(self) -> bool:
@@ -884,3 +909,15 @@ def update_name(obj):
 
 	obj.name = name
 	update_fqn(obj)
+
+
+CLASS_ICONS = {
+	Cluster: 'apps',
+	Function: 'functions',
+	Hardware: 'developer_board',
+	DirectObservable: 'table_chart',
+	ObservedError: 'feedback',
+	DiagnosticTest: 'assignment',
+	DiagnosticTestResult: 'analytics',
+	OperatingMode: 'alt_route'
+}

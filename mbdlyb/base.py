@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-	Copyright (c) 2023 - 2025 TNO-ESI
+	Copyright (c) 2023 - 2026 TNO-ESI
 	All rights reserved.
 """
 from typing import Union, Type, Optional
@@ -20,6 +20,7 @@ class TypedElement:
 
 class MBDElement(TypedElement):
 	_TYPE_NAME: str = 'MBDElement'
+	_color: str = '#FFFFFF'
 
 	name: str = None
 	_net: 'MBDNet' = None
@@ -55,6 +56,10 @@ class MBDElement(TypedElement):
 	def remove(self):
 		raise NotImplementedError(f'Method \'remove\' is not yet implemented by {self.__class__.__name__}.')
 
+	@classmethod
+	def get_color(cls) -> str:
+		return cls._color
+
 	@property
 	def net(self) -> Optional['MBDNet']:
 		return self._net
@@ -88,7 +93,6 @@ class MBDNode(MBDElement):
 	_TYPE_NAME = 'MBDNode'
 
 	_states: list[str] = None
-	_color: str = '#FFFFFF'
 
 	parent_relations: list['MBDRelation'] = None
 	child_relations: list['MBDRelation'] = None
@@ -120,10 +124,6 @@ class MBDNode(MBDElement):
 	@property
 	def children(self) -> list['MBDNode']:
 		return [cr.target for cr in self.child_relations]
-
-	@classmethod
-	def get_color(cls) -> str:
-		return cls._color
 
 	@property
 	def states(self) -> list[str]:

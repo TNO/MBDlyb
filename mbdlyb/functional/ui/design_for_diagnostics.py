@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-	Copyright (c) 2023 - 2025 TNO-ESI
+	Copyright (c) 2023 - 2026 TNO-ESI
 	All rights reserved.
 """
 import io
@@ -65,6 +65,7 @@ class UIDesignForDiagnosticsData:
 
 @router.page('/design_for_diagnostics/')
 def design_for_diagnostics_main(cluster_id: str):
+	editor_url = f'/cluster/{cluster_id}/'
 	data: UIDesignForDiagnosticsData = UIDesignForDiagnosticsData(cluster_id)
 	data.reset()
 
@@ -78,7 +79,7 @@ def design_for_diagnostics_main(cluster_id: str):
 		data.export_button = ui.button('Export', on_click=lambda: ui.download(data.analyzer.export(), f'design_for_diagnostics_{data.cluster.name}.xlsx'))
 		data.export_button.disable()
 		ui.space()
-		ui.button('Editor', icon='home', color='primary').on_click(lambda: goto(f'/cluster/{cluster_id}'))
+		ui.button(app.storage.general['mode'], icon='home', color='primary').on_click(lambda: goto(editor_url))
 
 	with ui.grid(columns='1fr').classes('gap-1 min-w-[600px]'):
 		with ui.column().classes('border rounded-borders p-2 h-full'):

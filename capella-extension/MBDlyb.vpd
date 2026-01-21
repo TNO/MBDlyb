@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="ASCII"?>
 <!--
-  Copyright (c) 2023 - 2025 TNO-ESI
+  Copyright (c) 2023 - 2026 TNO-ESI
   All rights reserved.
 -->
-<vpd:VpdRoot xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:vpd="http://www.thalesgroup.com/vpd" id="_YxfdsOSAEe-NSc5BWRWm_g" name="MBDlyb" version="1.0.0">
+<vpd:VpdRoot xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:vpd="http://www.thalesgroup.com/vpd" id="_nxOb4HeKEfC1zJrop0Biig" name="MBDlyb" version="1.0.0">
   <groups id="_4FZsEOI8Ee-yY5CBQmOf1Q" name="Inspections">
     <scope>
       <rules xsi:type="vpd:EClassRule">
@@ -58,6 +58,7 @@
       <architectures>PHYSICAL</architectures>
     </scope>
     <properties xsi:type="vpd:FloatProperty" id="_CWdZAA7bEfCWuZVqI8Q_SA" name="Fault rate" description="The probability that this particular component is faulty (if there is no additional diagnostic information available)" defaultValue="0.01"/>
+    <properties xsi:type="vpd:StringProperty" id="_AYl_YMVMEfCjXbfm7q8M3A" name="Fault rates" description="Comma-separated list of fault rates for different faults in the format &quot;&lt;Fault1>:&lt;Fault1Rate>,&lt;Fault2>:&lt;Fault2Rate>&quot;" defaultValue=""/>
   </groups>
   <groups id="_j0x7AEIBEfCvFIoVyAPfJg" name="Error reporting">
     <scope>
@@ -79,5 +80,18 @@
       <architectures>PHYSICAL</architectures>
     </scope>
     <properties xsi:type="vpd:BooleanProperty" id="__JvoUFi7EfCrAba709ngQw" name="Complete composite" description="Whether or not this component is completely described by its subcomponents in the model. If this is true, the component itself cannot be broken, because any fault would be in one or more of its subcomponents"/>
+  </groups>
+  <groups id="_O4YpwMVMEfCjXbfm7q8M3A" name="MultiState">
+    <scope>
+      <rules xsi:type="vpd:EClassRule">
+        <classifier href="http://www.polarsys.org/capella/core/la/7.0.0#//LogicalFunction"/>
+      </rules>
+      <rules xsi:type="vpd:EClassRule">
+        <classifier href="http://www.polarsys.org/capella/core/pa/7.0.0#//PhysicalFunction"/>
+      </rules>
+      <architectures>PHYSICAL</architectures>
+      <architectures>LOGICAL</architectures>
+    </scope>
+    <properties xsi:type="vpd:StringProperty" id="_gqA4UMVMEfCjXbfm7q8M3A" name="States" description="Comma-separated list of custom discrete states for this function. When empty, the function can be Ok or NOk. Format: &quot;&lt;State1>,&lt;State2>,&lt;State3>&quot;."/>
   </groups>
 </vpd:VpdRoot>

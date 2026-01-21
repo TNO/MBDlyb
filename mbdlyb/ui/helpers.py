@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-	Copyright (c) 2023 - 2025 TNO-ESI
+	Copyright (c) 2023 - 2026 TNO-ESI
 	All rights reserved.
 """
 from typing import Optional
 
+import pandas as pd
 from neomodel import DoesNotExist
 from nicegui import ui
 from itertools import product
@@ -169,6 +170,11 @@ class CPT:
 			'lines': [[c.probability for c in l.cells] for l in self.lines]
 		}
 
+	def to_df(self) -> pd.DataFrame:
+		parent_fqns = [p.fqn for p in self.parents]
+		lines = [l.conditions + [c.probability for c in l.cells] for l in self.lines]
+		return pd.DataFrame(data=lines, columns=parent_fqns + self.node.states).set_index(parent_fqns)
+
 	@staticmethod
 	def from_dict(node: MBDNode, d: dict) -> tuple['CPT', Optional[str]]:
 		message = None
@@ -185,6 +191,21 @@ class CPT:
 		if message is not None:
 			return CPT(node), message
 		return CPT(node, d['lines']), None
+
+	@staticmethod
+	def from_df(node: MBDNode, df: pd.DataFrame) -> tuple['CPT', Optional[str]]:
+		message = None
+		if list(df.columns) != node.states:
+			message = f'CPT-provided states do not match expected states ({", ".join(node.states)}).'
+		elif list(df.index.names) != [p.fqn for p in node.parents()]:
+			message = f'CPT-provided parents do not match the expected parents.'
+		elif len(df.index) != prod(len(p.states) for p in node.parents()):
+			message = 'Number of provided CPT lines is invalid. This is likely caused by a change in the states of one or more of its parents.'
+		elif df.sum().sum() == 0.:
+			message = 'Unfilled CPT was provided.'
+		if message is not None:
+			return CPT(node), message
+		return CPT(node, df.values.tolist()), None
 
 
 # DATABASE HELPERS

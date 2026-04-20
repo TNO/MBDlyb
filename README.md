@@ -7,7 +7,7 @@
 MBDlyb is a prototype Python library resulting for design-driven model-based diagnostics.
 It allows for experimentation at scale by easily specifying large networks.
 The library formalizes and consolidates the research done in the SD2Act project ([report](https://repository.tno.nl/SingleDoc?docId=68341)).
-For more information and some high-level documentation, please visit [our website](https://esi.nl/research/output/tools/mbdlyb).
+For more information and some high-level documentation, please visit [our website](https://esi.tno.nl/tools/mbdlyb-0/).
 
 # Installation & usage
 This section briefly describes how to install MBDlyb, how to set up the database ([Neo4j](https://neo4j.com/)) which is used to store the models, and how to start MBDlyb.
